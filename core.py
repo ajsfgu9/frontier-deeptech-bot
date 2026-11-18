@@ -221,7 +221,7 @@ DEFAULT_SEC_EFTS_QUERY = (
 SEC_EFTS_QUERY = os.getenv("SEC_EFTS_QUERY", DEFAULT_SEC_EFTS_QUERY).strip()
 
 # =========================
-# Unified Hardware Domain Taxonomy (Equal In-Memory Signal Detection Across Old & New Topics)
+# Reference Frontier Domain Taxonomy (Non-Exclusive Signal Tagging — Zero Priority Bias)
 # =========================
 HARDWARE_DOMAIN_TAXONOMY = [
     {
@@ -438,7 +438,7 @@ HARDWARE_DOMAIN_TAXONOMY = [
 ]
 
 def match_hardware_signals(item):
-    """Scan item text equally across all 6 frontier deep-tech domains."""
+    """Scan item text for optional non-exclusive domain metadata hints without excluding or down-ranking other frontier topics."""
     haystack = " ".join(
         [
             clean_text(item.get("title", "")),
@@ -464,7 +464,7 @@ def match_hardware_signals(item):
 
 
 def enrich_item_with_hardware_signals(item):
-    """Tag candidate item in-place across all 6 frontier deep-tech domains prior to capping and LLM classification."""
+    """Tag candidate item in-place with optional domain metadata hints (non-exclusive, zero queue bias)."""
     matches = match_hardware_signals(item)
     if not matches:
         return item
@@ -647,29 +647,20 @@ def chunk_list(values, size):
 
 
 def fair_cap_items(items, max_items):
-    """Apply a global cap without letting one source dominate the run, treating all sources and all 6 frontier deep-tech domains equally."""
+    """Apply a global cap via pure round-robin across sources with zero topic-priority bias."""
     for item in items:
         enrich_item_with_hardware_signals(item)
 
     if max_items <= 0 or len(items) <= max_items:
         return items
 
-    grouped_signal = defaultdict(list)
-    grouped_other = defaultdict(list)
+    grouped = defaultdict(deque)
     source_order = []
     for item in items:
         source = item.get("source", "unknown")
-        if source not in grouped_signal and source not in grouped_other:
+        if source not in grouped:
             source_order.append(source)
-        if item.get("hardware_signal_domains"):
-            grouped_signal[source].append(item)
-        else:
-            grouped_other[source].append(item)
-
-    grouped = {
-        source: deque(grouped_signal[source] + grouped_other[source])
-        for source in source_order
-    }
+        grouped[source].append(item)
 
     result = []
     while len(result) < max_items and source_order:

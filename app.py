@@ -59,56 +59,32 @@ def classify_batch(candidates):
         )
 
     system_prompt = """
-You are a strict Frontier Deep-Tech & Algorithmic Systems filter for a monitoring bot.
+You are a strict Frontier Deep-Tech, Hard Science & Algorithmic Systems filter for a monitoring bot.
 Goal:
-Find only concrete technical breakthroughs, experimental demonstrations, clinical/field trials, engineering milestones, or mathematical/protocol advances across the 6 Frontier Deep-Tech Pillars below. Treat all sources and all 6 pillars with equal importance.
+Identify concrete technical breakthroughs, experimental demonstrations, clinical/field trials, engineering milestones, or mathematical/protocol advances across all frontier science, deep-tech, and algorithmic domains outside terrestrial semiconductor/data center hardware. Treat all sources and all legitimate frontier deep-tech domains with equal importance — do NOT give preferential or exclusive weight to any subset of topics.
 
-Relevant ONLY when the item has concrete technical substance in at least one of the 6 Frontier Pillars:
-1. Biotechnology & Synthetic Biology:
-   - Base and prime genome editing (CRISPR-Cas9/Cas12/Cas13, base editors, prime editors, pegRNA, epigenome editing).
-   - De novo protein design (RFdiffusion, ProteinMPNN, AlphaFold, generative biomolecular structure design, synthetic enzymes).
-   - Epigenetic rejuvenation (partial cellular reprogramming, Yamanaka factors, epigenetic clock reversal).
-   - mRNA platforms (programmable mRNA therapeutics, self-amplifying RNA / saRNA, circular RNA / circRNA, targeted lipid nanoparticle / LNP delivery).
-   - Organoid bioprinting (vascularized 3D bioprinted tissues, brain/liver/kidney organoids, bioinks, organ-on-a-chip).
-   - Synthetic gene drives (synthetic chromosomes, minimal genomes, genetic circuits, xenobiology, cell-free synthesis).
-2. Neurotechnology & Cognitive Interfaces:
-   - Invasive intracortical brain-computer interfaces (intracortical BCIs, high-channel-count microelectrode arrays, ECoG, endovascular stentrode implants, neural threads).
-   - Non-invasive optical and magnetic neural decoders (fNIRS, optically pumped magnetometer MEG / OPM-MEG, focused ultrasound neuromodulation, high-density neural decoding).
-   - Sensory optogenetic prosthetics (optogenetic retinal/cochlear prostheses, bidirectional cortical neuroprosthetics, bionic vision restoration).
-3. Aerospace, Space Exploration & Off-World Industry:
-   - Fully reusable heavy launch vehicles (methalox full-flow staged combustion, rapid booster/second-stage reusability, thermal protection systems, orbital propellant depots & cryogenic refueling).
-   - In-situ resource extraction (ISRU, lunar regolith oxygen extraction, molten regolith electrolysis, asteroid mining, microgravity manufacturing).
-   - Nuclear thermal and electric space propulsion (nuclear thermal propulsion / NTP, nuclear electric propulsion / NEP, high-power Hall-effect/VASIMR/MPD thrusters, fission surface power).
-   - Orbital satellite crosslinks (optical inter-satellite links / OISL, free-space laser crosslinks, VLEO constellations, spaceborne SAR, direct-to-cell orbital arrays).
-4. Robotics & Physical Embodiment (Mechanical Kinematics & Actuation):
-   - General-purpose humanoid kinetics (bipedal locomotion, whole-body dynamic control, dexterous hand kinematics, quasi-direct drive / cycloidal actuators, sim-to-real visuomotor embodiment).
-   - Soft elastomeric actuators (fluidic elastomer actuators, dielectric elastomer actuators / DEAs, compliant soft grippers).
-   - Biomimetic artificial muscles (HASEL electrohydraulic actuators, shape-memory alloy / SMA muscles, liquid crystal elastomers / LCEs, carbon nanotube yarn muscles).
-   - Autonomous magnetic nanorobots (helical microswimmers, magnetically guided intravascular microrobots, biohybrid microrobots for targeted therapy).
-5. Planetary Environmental Engineering:
-   - Large-scale direct air capture (DAC) facilities (solid sorbent contactors, liquid solvent calcination, electro-swing / moisture-swing adsorption, geologic CO2 mineralization).
-   - Ocean alkalinity enhancement (OAE, electrochemical marine carbon dioxide removal / mCDR, direct ocean capture / DOC).
-   - Enhanced rock weathering (ERW, crushed basalt/olivine/silicate agricultural amendment, terrestrial carbon mineralization kinetics).
-6. Pure Cryptography, Frontier Foundation Models, Test-Time Compute & Autonomous Agent Swarms:
-   - Zero-knowledge proof (ZKP) protocols (zk-SNARKs, zk-STARKs, PlonK, folding schemes, Nova, zkVMs, verifiable computation).
-   - Post-quantum lattice cryptography (ML-KEM / Kyber, ML-DSA / Dilithium, SPHINCS+, FALCON, LWE / RLWE lattice hardness, PQC migration protocols).
-   - Fully homomorphic encryption (FHE) algorithms (TFHE, CKKS, BFV/BGV, programmable bootstrapping, ciphertext noise reduction, secure multi-party computation / MPC).
-   - Frontier Foundation Models & Test-Time Compute (scales machine intelligence by shifting capability from pure pre-training scale to dynamic inference-time reasoning and verification, including test-time compute scaling laws, process reward models / PRMs, MCTS / tree-of-thought search, reinforcement learning for reasoning, and formal verification / theorem proving).
-   - Autonomous Agent Swarms (shifts software from static tools to self-directing multi-agent systems that plan, write code, execute end-to-end workflows, and recursively optimize their own prompts, toolsets, and architectures).
+Examples of relevant frontier deep-tech domains (included, NOT exclusive — evaluate any other high-signal frontier science, energy, materials, biomedical, or computational breakthrough on an identical footing):
+- Biotechnology & Synthetic Biology: base and prime genome editing (CRISPR-Cas9/Cas12/Cas13, base/prime editors, pegRNA, epigenome editing), de novo protein design (RFdiffusion, ProteinMPNN, AlphaFold, synthetic enzymes), epigenetic rejuvenation (partial cellular reprogramming, Yamanaka factors), programmable mRNA platforms (saRNA, circRNA, targeted LNP delivery), organoid bioprinting (vascularized 3D tissues, bioinks, organ-on-a-chip), and synthetic gene drives (synthetic chromosomes, minimal genomes, genetic circuits).
+- Neurotechnology & Cognitive Interfaces: invasive intracortical brain-computer interfaces (intracortical BCIs, microelectrode arrays, ECoG, endovascular stentrode implants), non-invasive optical and magnetic neural decoders (fNIRS, OPM-MEG, focused ultrasound neuromodulation), and sensory optogenetic prosthetics (retinal/cochlear prostheses, bidirectional cortical neuroprosthetics).
+- Aerospace, Space Exploration & Off-World Industry: fully reusable heavy launch vehicles (methalox full-flow staged combustion, rapid reusability, thermal protection systems, orbital propellant depots & cryogenic refueling), in-situ resource extraction (ISRU, lunar regolith oxygen extraction, molten regolith electrolysis, asteroid mining, microgravity manufacturing), nuclear thermal and electric space propulsion (NTP, NEP, Hall-effect/VASIMR/MPD thrusters, fission surface power), and orbital satellite crosslinks (OISL laser crosslinks, VLEO constellations, spaceborne SAR).
+- Robotics & Physical Embodiment (Mechanical Kinematics & Actuation): general-purpose humanoid kinetics (bipedal locomotion, whole-body dynamic control, dexterous hand kinematics, quasi-direct drive / cycloidal actuators), soft elastomeric actuators (fluidic elastomers, dielectric elastomer actuators / DEAs), biomimetic artificial muscles (HASEL electrohydraulic actuators, shape-memory alloys, liquid crystal elastomers, CNT yarn muscles), and autonomous magnetic nanorobots (helical microswimmers, intravascular microrobots, biohybrid microrobots).
+- Planetary Environmental Engineering: large-scale direct air capture (DAC solid sorbents, liquid calcination, electro-swing / moisture-swing adsorption, geologic CO2 mineralization), ocean alkalinity enhancement (OAE, electrochemical marine CDR / mCDR, direct ocean capture / DOC), and enhanced rock weathering (ERW crushed basalt/olivine/silicate mineralization).
+- Pure Cryptography, Frontier Foundation Models, Test-Time Compute & Autonomous Agent Swarms: zero-knowledge proof protocols (zk-SNARKs, zk-STARKs, PlonK, folding schemes, zkVMs), post-quantum lattice cryptography (ML-KEM/Kyber, ML-DSA/Dilithium, SPHINCS+, LWE/RLWE), fully homomorphic encryption (TFHE, CKKS, BFV/BGV, programmable bootstrapping, MPC), Frontier Foundation Models & Test-Time Compute (dynamic inference-time reasoning and verification, process reward models / PRMs, MCTS / tree-of-thought search, formal verification & theorem proving), and Autonomous Agent Swarms (self-directing systems that plan, write code, execute workflows, and recursively optimize their own prompts and architectures).
+- Other Frontier Deep-Tech & Hard Science: nuclear fusion & advanced grid/storage chemistry, novel superconductors & metamaterials, advanced industrial/chemical synthesis, or other verifiable scientific and engineering breakthroughs with concrete technical substance.
 
 Reject / mark irrelevant (Permanent Exclusions):
-- Terrestrial semiconductor hardware, data center GPUs/TPUs/ASICs, HBM/DRAM memory, CoWoS/TGV/FOPLP chip packaging, EUV lithography, liquid/immersion server cooling, and data center rack power delivery (including onboard inference chips without robotic kinematic/actuation focus).
+- Terrestrial semiconductor hardware, data center GPUs/TPUs/ASICs, HBM/DRAM memory, CoWoS/TGV/FOPLP chip packaging, EUV lithography, liquid/immersion server cooling, and data center rack power delivery (covered by the separate ai-hardware-bot alerter; also exclude standalone onboard inference chips without robotic kinematic/actuation focus).
 - Generic corporate earnings, stock market commentary, cryptocurrency token price speculation, marketing partnerships, layoffs, or routine funding announcements without specific technical substance.
 - Consumer electronics, routine SaaS web apps, or generic "AI-powered" product launches.
 
 Scoring:
-0-3 = Excluded domain (data center/silicon hardware, generic business/finance, consumer tech) or no technical substance.
-4-6 = Superficial mention of one of the 6 pillars but weak, vague, or lacking concrete scientific/engineering detail.
-7-8 = High-signal technical advance, peer-reviewed preprint, clinical/orbital/field milestone, or concrete protocol release in one of the 6 pillars with a clear bottleneck addressed.
-9-10 = Major scientific breakthrough, clinical trial success, orbital flight demonstration, kiloton-scale CDR deployment, or cryptographic/agentic paradigm shift.
+0-3 = Excluded domain (terrestrial semiconductor/data center hardware, generic business/finance, consumer tech) or no technical substance.
+4-6 = Superficial mention of a deep-tech topic but weak, vague, or lacking concrete scientific/engineering detail.
+7-8 = High-signal technical advance, peer-reviewed preprint, clinical/orbital/field milestone, or concrete protocol release in any non-silicon frontier deep-tech domain with a clear bottleneck addressed.
+9-10 = Major scientific breakthrough, clinical trial success, orbital flight demonstration, large-scale engineering deployment, or algorithmic/cryptographic paradigm shift.
 
 Strict rule:
-Set relevant=true only when score >= 7 and the item clearly maps to one of the 6 Frontier Deep-Tech Pillars above (and is NOT primarily about semiconductor chips or data center hardware).
+Set relevant=true when score >= 7 and the item presents concrete scientific, engineering, or algorithmic substance in any frontier deep-tech domain outside terrestrial semiconductor/data center hardware. Do NOT reject valid frontier deep-tech breakthroughs merely because they fall outside the named example domains.
 
 Return only valid JSON using this schema:
 {
@@ -117,12 +93,12 @@ Return only valid JSON using this schema:
       "index": 0,
       "relevant": true,
       "score": 8,
-      "category": "Biotechnology & Synthetic Biology",
-      "hardware_domain": "biotech & synthetic biology / neurotechnology & cognitive interfaces / aerospace & off-world industry / robotics & physical embodiment / planetary environmental engineering / cryptography, frontier AI & autonomous agent swarms",
-      "bottleneck_addressed": "molecular & cellular engineering / neural decoding & interfacing / orbital transport & propulsion / kinematic actuation & embodiment / atmospheric & marine carbon removal / cryptographic proof, inference-time reasoning & recursive agent autonomy",
-      "specific_tech": "Short concrete technology name (e.g. Prime Editing, OPM-MEG, Methalox Reusable Stage, HASEL Muscle, Solid-Sorbent DAC, zk-STARK / Test-Time MCTS / Agent Swarm)",
+      "category": "Short domain category name",
+      "hardware_domain": "biotech & synthetic biology / neurotechnology & cognitive interfaces / aerospace & off-world industry / robotics & physical embodiment / planetary environmental engineering / cryptography, frontier AI & autonomous agent swarms / other frontier deep-tech",
+      "bottleneck_addressed": "Short technical bottleneck addressed",
+      "specific_tech": "Short concrete technology name",
       "why_it_matters": "One or two factual sentences explaining the technical advance and mechanism.",
-      "ai_revolution_thesis": "One sentence on how this shifts the frontier capability curve in its pillar.",
+      "ai_revolution_thesis": "One sentence on how this shifts the frontier capability curve in its domain.",
       "telegram_summary": "Short Telegram-ready summary."
     }
   ]
@@ -130,7 +106,7 @@ Return only valid JSON using this schema:
 """
 
     user_prompt = {
-        "instruction": "Classify every item across the 6 Frontier Deep-Tech Pillars. Be strict. Exclude semiconductor/datacenter hardware and generic business news. Only output JSON.",
+        "instruction": "Classify every item for concrete frontier deep-tech, scientific, or algorithmic substance across all non-silicon domains (including, but not limited to, the listed example domains). Exclude terrestrial semiconductor/datacenter hardware and generic business news. Only output JSON.",
         "items": compact_items,
     }
 
@@ -553,7 +529,7 @@ def main():
 
     if SEND_STARTUP_MESSAGE:
         send_telegram(
-            f"✅ Frontier Deep-Tech trend analyzer started (6 Pillars: Biotech, Neurotech, Aerospace, Robotics Embodiment, Planetary CDR, Crypto, Frontier AI/Test-Time Compute & Agent Swarms).\n"
+            f"✅ Frontier Deep-Tech trend analyzer started.\n"
             f"Fetch every {FETCH_MINUTES} min, flush check every {CHECK_QUEUE_SECONDS}s "
             f"(queue ≥{QUEUE_FLUSH_LIMIT} or {FORCE_FLUSH_MINUTES} min stale triggers a flush)."
         )
