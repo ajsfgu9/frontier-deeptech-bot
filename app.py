@@ -1,4 +1,5 @@
 from core import *
+from core import _queue_lock, _feed_state_lock, _thread_local
 from fetchers import *
 
 _last_flush_time = utc_now()
