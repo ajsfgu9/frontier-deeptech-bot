@@ -1,0 +1,15 @@
+services:
+  frontier-deeptech-bot:
+    build: .
+    image: frontier-deeptech-bot:latest
+    container_name: frontier-deeptech-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
