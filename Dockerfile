@@ -10,19 +10,16 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Non-root user — the whole point of container isolation is defeated if the
-# process inside runs as root with a compromised process able to touch the
-# rest of the filesystem it can see.
-RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --shell /bin/bash botuser \
+# Non-root user + gosu so the entrypoint can fix ./data bind-mount ownership
+# before dropping privileges to botuser (UID 1000).
+RUN apt-get update && apt-get install -y --no-install-recommends sqlite3 gosu && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1000 --create-home --shell /bin/bash botuser \
     && mkdir -p /app/data \
     && chown -R botuser:botuser /app
 
 COPY --chown=botuser:botuser *.py .
 
-USER botuser
-
 HEALTHCHECK --interval=5m --timeout=10s --start-period=2m --retries=3 \
-    CMD test -n "$(find /app/data/heartbeat.txt -mmin -15 2>/dev/null)" || exit 1
+    CMD test -n "$(find /app/data/heartbeat.txt /tmp/frontier_deeptech_data/heartbeat.txt -mmin -15 2>/dev/null)" || exit 1
 
-ENTRYPOINT ["python", "-u", "app.py"]
+ENTRYPOINT ["sh", "-c", "mkdir -p /app/data && chown -R botuser:botuser /app/data 2>/dev/null || true; exec gosu botuser python -u app.py"]

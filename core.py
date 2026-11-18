@@ -200,8 +200,8 @@ ENABLE_HTML_SCRAPER = get_bool("ENABLE_HTML_SCRAPER", True)
 HTML_SCRAPER_MAX_ITEMS_PER_SITE = get_int("HTML_SCRAPER_MAX_ITEMS_PER_SITE", 12)
 
 DEFAULT_HTML_SCRAPER_TARGETS = [
-    ("STAT News Biotech", "https://www.statnews.com/category/biotech/;;/20\d{2}/\d{2}/\d{2}/[a-z0-9-]+"),
-    ("SpaceNews Launch", "https://spacenews.com/segment/launch/;;/20\d{2}/[a-z0-9-]+"),
+    ("STAT News Biotech", "https://www.statnews.com/category/biotech/;;/20\\d{2}/\\d{2}/\\d{2}/[a-z0-9-]+"),
+    ("SpaceNews Launch", "https://spacenews.com/segment/launch/;;/20\\d{2}/[a-z0-9-]+"),
     ("Carbon Herald Capture", "https://carbonherald.com/category/carbon-capture/;;/[a-z0-9-]+/"),
 ]
 
@@ -625,9 +625,20 @@ def feed_record_result(feed_url, success):
 
 
 def ensure_db_directory():
+    global DB_PATH
     directory = os.path.dirname(DB_PATH)
     if directory:
         os.makedirs(directory, exist_ok=True)
+        if not os.access(directory, os.W_OK):
+            fallback_dir = "/tmp/frontier_deeptech_data"
+            os.makedirs(fallback_dir, exist_ok=True)
+            fallback_path = os.path.join(fallback_dir, os.path.basename(DB_PATH))
+            log.warning(
+                f"Directory '{directory}' is not writable by UID {os.getuid()} "
+                f"(check host bind-mount permissions, e.g., chown 1000:1000 ./data). "
+                f"Falling back to {fallback_path}"
+            )
+            DB_PATH = fallback_path
 
 
 def chunk_list(values, size):
@@ -680,6 +691,7 @@ def fair_cap_items(items, max_items):
 def connect_db():
     conn = getattr(_thread_local, "conn", None)
     if conn is None:
+        ensure_db_directory()
         conn = sqlite3.connect(DB_PATH, timeout=30)
         conn.row_factory = sqlite3.Row
         _thread_local.conn = conn

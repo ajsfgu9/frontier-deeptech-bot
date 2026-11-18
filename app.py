@@ -322,9 +322,14 @@ def fetch_all_sources() -> list:
 def touch_healthcheck():
     try:
         directory = os.path.dirname(HEALTHCHECK_FILE)
+        target_file = HEALTHCHECK_FILE
         if directory:
             os.makedirs(directory, exist_ok=True)
-        with open(HEALTHCHECK_FILE, "w") as fh:
+            if not os.access(directory, os.W_OK):
+                fallback_dir = "/tmp/frontier_deeptech_data"
+                os.makedirs(fallback_dir, exist_ok=True)
+                target_file = os.path.join(fallback_dir, os.path.basename(HEALTHCHECK_FILE))
+        with open(target_file, "w") as fh:
             fh.write(utc_now().isoformat())
     except Exception as exc:
         log.warning(f"Could not write healthcheck file {HEALTHCHECK_FILE}: {repr(exc)}")
