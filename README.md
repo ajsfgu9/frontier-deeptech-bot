@@ -1,6 +1,6 @@
 # Frontier Deep-Tech Trend Analyzer & Alerter (`frontier-deeptech-bot`)
 
-A multi-source scientific, engineering, and deep-tech intelligence pipeline cloned from the [`jijiji88888/ai-hardware-bot`](https://github.com/jijiji88888/ai-hardware-bot) architecture to monitor broad frontier deep-tech, hard-science, and algorithmic breakthroughs outside terrestrial data center silicon, chip packaging, and server rack cooling/power hardware (which are tracked by `ai-hardware-bot`).
+A multi-source scientific, engineering, and deep-tech intelligence pipeline that monitors broad frontier deep-tech, hard-science, and algorithmic breakthroughs outside terrestrial data center silicon, chip packaging, and server rack cooling/power hardware.
 
 ## Core Included Frontier Deep-Tech Domains (Non-Exclusive)
 
@@ -57,7 +57,7 @@ All six domains below are included alongside any other high-signal non-silicon f
    * `fair_cap_items()` performs pure round-robin interleaving across all active sources with zero topic-priority sorting.
    * `match_hardware_signals()` attaches optional domain metadata hints without excluding or prioritizing items over other frontier breakthroughs.
 4. **OpenRouter LLM Batch Classification & SQLite WAL Persistence**:
-   * `classify_batch()` scores candidates (`0-10`) across all non-silicon frontier deep-tech domains equally, permanently rejects terrestrial semiconductor/datacenter hardware and generic corporate noise, and persists verified items (`score >= 7.0`) to `/app/data/frontier_deeptech_trends.db` (SQLite WAL mode) with immediate Telegram alerts (`score >= 7.5`) and periodic digests.
+   * `classify_batch()` scores candidates (`0-10`) across all non-silicon frontier deep-tech domains equally, permanently rejects terrestrial semiconductor/datacenter hardware and generic corporate noise, and persists verified items (`score >= 7.0`) to `/app/data/frontier_deeptech_trends.db` (SQLite WAL mode on a managed Docker named volume `bot-data`) with immediate Telegram alerts (`score >= 7.5`) and periodic digests.
 
 ## Quick Start (Docker Compose)
 

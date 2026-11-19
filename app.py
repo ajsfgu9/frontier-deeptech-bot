@@ -74,7 +74,7 @@ Examples of relevant frontier deep-tech domains (included, NOT exclusive — eva
 - Other Frontier Deep-Tech & Hard Science: nuclear fusion & advanced grid/storage chemistry, novel superconductors & metamaterials, advanced industrial/chemical synthesis, or other verifiable scientific and engineering breakthroughs with concrete technical substance.
 
 Reject / mark irrelevant (Permanent Exclusions):
-- Terrestrial semiconductor hardware, data center GPUs/TPUs/ASICs, HBM/DRAM memory, CoWoS/TGV/FOPLP chip packaging, EUV lithography, liquid/immersion server cooling, and data center rack power delivery (covered by the separate ai-hardware-bot alerter; also exclude standalone onboard inference chips without robotic kinematic/actuation focus).
+- Terrestrial semiconductor hardware, data center GPUs/TPUs/ASICs, HBM/DRAM memory, CoWoS/TGV/FOPLP chip packaging, EUV lithography, liquid/immersion server cooling, and data center rack power delivery (also exclude standalone onboard inference chips without robotic kinematic/actuation focus).
 - Generic corporate earnings, stock market commentary, cryptocurrency token price speculation, marketing partnerships, layoffs, or routine funding announcements without specific technical substance.
 - Consumer electronics, routine SaaS web apps, or generic "AI-powered" product launches.
 
