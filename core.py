@@ -159,6 +159,7 @@ DEFAULT_ARXIV_CATEGORIES = [
     "q-bio.GN", "q-bio.BM", "q-bio.NC", "q-bio.TO", "q-bio.QM",
     "cs.RO", "cs.CR", "cs.MA", "cs.AI", "cs.CL", "cs.LG", "cs.LO",
     "physics.space-ph", "astro-ph.IM", "physics.ao-ph", "physics.flu-dyn",
+    "physics.plasm-ph", "cond-mat.mtrl-sci", "cond-mat.mes-hall", "physics.optics", "physics.app-ph",
 ]
 ARXIV_CATEGORIES = get_csv("ARXIV_CATEGORIES", DEFAULT_ARXIV_CATEGORIES)
 
@@ -170,7 +171,7 @@ SEND_RAW_FETCH_JSON = get_bool("SEND_RAW_FETCH_JSON", False)
 # Expanded high-signal sources
 # =========================
 
-# Step 1: specialist frontier deep-tech sources (Biotech, Neurotech, Space, Robotics, Climate CDR, Crypto/Agents)
+# Step 1: specialist frontier deep-tech sources (Biotech, Neurotech, Space, Robotics, Energy/Fusion/SMR/Batteries/Geothermal/CDR, Materials/Nanotech, Crypto/Agents)
 ENABLE_SPECIALIST_RSS = get_bool("ENABLE_SPECIALIST_RSS", True)
 SPECIALIST_RSS_MAX_ITEMS_PER_FEED = get_int("SPECIALIST_RSS_MAX_ITEMS_PER_FEED", 12)
 DEFAULT_SPECIALIST_RSS_FEEDS = [
@@ -184,6 +185,11 @@ DEFAULT_SPECIALIST_RSS_FEEDS = [
     ("The Robot Report", "https://www.therobotreport.com/feed/"),
     ("IEEE Spectrum Robotics", "https://spectrum.ieee.org/feeds/topic/robotics.rss"),
     ("Carbon Herald", "https://carbonherald.com/feed/"),
+    ("World Nuclear News", "https://www.world-nuclear-news.org/rss"),
+    ("ThinkGeoEnergy", "https://www.thinkgeoenergy.com/feed/"),
+    ("Energy Storage News", "https://www.energy-storage.news/feed/"),
+    ("Nanowerk", "https://www.nanowerk.com/rss/news.xml"),
+    ("Phys.org Materials", "https://phys.org/rss-feed/chemistry-news/materials-science/"),
     ("IACR Cryptology ePrint", "https://eprint.iacr.org/rss/rss.xml"),
 ]
 
@@ -192,7 +198,7 @@ ENABLE_SUPPLY_CHAIN_RSS = get_bool("ENABLE_SUPPLY_CHAIN_RSS", True)
 SUPPLY_CHAIN_RSS_MAX_ITEMS_PER_FEED = get_int("SUPPLY_CHAIN_RSS_MAX_ITEMS_PER_FEED", 12)
 DEFAULT_SUPPLY_CHAIN_RSS_FEEDS = [
     ("Ars Technica Science", "https://feeds.arstechnica.com/arstechnica/science"),
-    ("Quanta Magazine", "https://api.quantamagazine.org/v1/rss"),
+    ("Quanta Magazine", "https://www.quantamagazine.org/feed/"),
     ("Canary Media", "https://www.canarymedia.com/rss.rss"),
 ]
 
@@ -215,8 +221,11 @@ DEFAULT_SEC_EFTS_QUERY = (
     '"CRISPR" OR "base editing" OR "prime editing" OR "de novo protein" OR "mRNA platform" '
     'OR "brain-computer interface" OR "optogenetics" OR "reusable launch vehicle" '
     'OR "nuclear thermal propulsion" OR "optical inter-satellite" OR "humanoid robot" '
-    'OR "direct air capture" OR "ocean alkalinity" OR "zero-knowledge proof" '
-    'OR "post-quantum cryptography" OR "fully homomorphic encryption" OR "test-time compute" OR "autonomous agent"'
+    'OR "direct air capture" OR "ocean alkalinity" OR "small modular reactor" OR "molten salt reactor" '
+    'OR "solid-state battery" OR "fusion energy" OR "geothermal drilling" '
+    'OR "van der Waals" OR "metamaterial" OR "ultra-high-temperature ceramic" '
+    'OR "zero-knowledge proof" OR "post-quantum cryptography" OR "fully homomorphic encryption" '
+    'OR "test-time compute" OR "autonomous agent"'
 )
 SEC_EFTS_QUERY = os.getenv("SEC_EFTS_QUERY", DEFAULT_SEC_EFTS_QUERY).strip()
 
@@ -368,27 +377,68 @@ HARDWARE_DOMAIN_TAXONOMY = [
         ],
     },
     {
-        "domain": "planetary environmental engineering",
-        "bottleneck": "atmospheric & marine carbon removal kinetics",
+        "domain": "advanced energy & planetary systems",
+        "bottleneck": "zero-carbon baseload generation, energy density & gigaton carbon removal",
         "subtopics": [
             (
-                "Large-scale direct air capture (DAC) facilities, solid sorbents & electro-swing adsorption",
+                "Magnetic & Inertial Confinement Fusion (tokamaks, stellarators, HTS magnets, high-yield laser ICF, net-positive fusion)",
                 re.compile(
-                    r"\b(direct\s+air\s+capture|\bDAC\b\s+(?:facility|plant|sorbent|contactor)|solid\s+sorbent\s+DAC|liquid\s+solvent\s+calcination|electro-swing\s+adsorption|moisture-swing\s+sorbent|geologic\s+carbon\s+sequestration)\b",
+                    r"\b(magnetic\s+confinement\s+fusion|inertial\s+confinement\s+fusion|\bICF\b.*?fusion|tokamaks?|stellarators?|spherical\s+tokamaks?|fusion\s+(?:reactor|ignition|plasma|energy|power\s+plant)|net-positive\s+fusion|laser\s+fusion|aneutronic\s+fusion|HTS\s+fusion\s+magnet)\b",
                     re.IGNORECASE,
                 ),
             ),
             (
-                "Ocean alkalinity enhancement (OAE), marine CDR (mCDR) & electrochemical ocean capture",
+                "Small Modular & Molten-Salt Fission Reactors (SMRs, MSRs, unpressurized coolant, Gen IV fast reactors, nuclear waste transmutation)",
                 re.compile(
-                    r"\b(ocean\s+alkalinity\s+enhancement|\bOAE\b|marine\s+carbon\s+dioxide\s+removal|\bmCDR\b|direct\s+ocean\s+capture|\bDOC\b|electrochemical\s+ocean\s+acid)\b",
+                    r"\b(small\s+modular\s+reactors?|\bSMRs?\b.*?(?:nuclear|reactor|fission|power)|molten-?salt\s+(?:fission\s+)?reactors?|\bMSRs?\b.*?reactor|thorium\s+reactor|walk-away-safe\s+nuclear|TRISO\s+fuel|liquid-metal\s+fast\s+reactor|nuclear\s+waste\s+(?:consumption|transmutation|burner))\b",
                     re.IGNORECASE,
                 ),
             ),
             (
-                "Enhanced rock weathering (ERW), silicate/basalt amendment & terrestrial mineralization",
+                "Beyond-Lithium & Solid-State Batteries (sulfide/ceramic solid electrolytes, metallic lithium anodes, sodium-ion, Li-S, Li-air)",
                 re.compile(
-                    r"\b(enhanced\s+rock\s+weathering|\bERW\b|enhanced\s+silicate\s+weathering|basalt\s+(?:weathering|amendment)|olivine\s+weathering|wollastonite\s+mineralization|carbon\s+mineralization)\b",
+                    r"\b(solid-state\s+batter(?:y|ies)|sulfide\s+(?:solid\s+)?electrolytes?|ceramic\s+(?:solid\s+)?electrolytes?|metallic\s+lithium\s+anodes?|lithium-metal\s+batter(?:y|ies)|beyond-lithium|sodium-ion\s+batter(?:y|ies)|lithium-sulfur\s+batter(?:y|ies)|lithium-air\s+batter(?:y|ies)|all-solid-state\s+cell)\b",
+                    re.IGNORECASE,
+                ),
+            ),
+            (
+                "Direct Air Capture (DAC), Ocean Alkalinity Enhancement (OAE), Ocean Mineralization & Enhanced Rock Weathering (ERW)",
+                re.compile(
+                    r"\b(direct\s+air\s+capture|\bDAC\b\s+(?:facility|plant|sorbent|contactor)|solid\s+sorbent\s+DAC|electro-swing\s+adsorption|ocean\s+alkalinity\s+enhancement|\bOAE\b|ocean\s+mineralization|marine\s+carbon\s+dioxide\s+removal|\bmCDR\b|direct\s+ocean\s+capture|enhanced\s+rock\s+weathering|\bERW\b|basalt\s+(?:weathering|amendment)|carbon\s+mineralization)\b",
+                    re.IGNORECASE,
+                ),
+            ),
+            (
+                "Deep Geothermal Drilling (millimeter-wave directed-energy gyrotron drilling, advanced hammers, 10+ km crystalline basement rock, EGS)",
+                re.compile(
+                    r"\b(deep\s+geothermal|millimeter-wave\s+(?:drilling|directed\s+energy)|gyrotron\s+drilling|superhot\s+rock\s+geothermal|crystalline\s+basement\s+rock|enhanced\s+geothermal\s+systems?|\bEGS\b.*?geothermal|closed-loop\s+geothermal|plasma\s+drilling.*?geothermal)\b",
+                    re.IGNORECASE,
+                ),
+            ),
+        ],
+    },
+    {
+        "domain": "advanced materials & nanotechnology",
+        "bottleneck": "atomic-scale electronic, wave-manipulation & extreme thermal limits",
+        "subtopics": [
+            (
+                "2D Materials & Van der Waals Heterostructures (monolayer graphene, hexagonal boron nitride / hBN, TMDs, MXenes)",
+                re.compile(
+                    r"\b(2D\s+materials?|van\s+der\s+Waals\s+heterostructures?|monolayer\s+graphene|twisted\s+bilayer\s+graphene|hexagonal\s+boron\s+nitride|\bhBN\b|transition\s+metal\s+dichalcogenides?|\bTMDs?\b.*?(?:monolayer|2D|MoS2|WS2|WSe2)|MoS2\s+monolayer|MXenes?)\b",
+                    re.IGNORECASE,
+                ),
+            ),
+            (
+                "Electromagnetic & Acoustic Metamaterials (sub-wavelength metasurfaces, negative refraction, wave bending, cloaking & phononic crystals)",
+                re.compile(
+                    r"\b(electromagnetic\s+metamaterials?|acoustic\s+metamaterials?|metamaterials?|metasurfaces?|negative\s+refractive\s+index|phononic\s+crystals?|sub-wavelength\s+(?:geometry|metasurface|metamaterial)|acoustic\s+cloaking|electromagnetic\s+cloaking)\b",
+                    re.IGNORECASE,
+                ),
+            ),
+            (
+                "Ultra-High-Temperature Ceramics (UHTCs: ZrB2, HfB2, HfC, TaC >2,000C oxidation resistance for hypersonic & re-entry shields)",
+                re.compile(
+                    r"\b(ultra-high-temperature\s+ceramics?|\bUHTCs?\b|zirconium\s+diboride|ZrB2|hafnium\s+diboride|HfB2|hafnium\s+carbide|HfC|tantalum\s+carbide|TaC|hypersonic\s+(?:leading\s+edge|flight\s+surface|thermal\s+protection)|re-entry\s+(?:heat\s+shield|ceramic))\b",
                     re.IGNORECASE,
                 ),
             ),

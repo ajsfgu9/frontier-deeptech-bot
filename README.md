@@ -4,7 +4,7 @@ A multi-source scientific, engineering, and deep-tech intelligence pipeline that
 
 ## Core Included Frontier Deep-Tech Domains (Non-Exclusive)
 
-All six domains below are included alongside any other high-signal non-silicon frontier science, energy, materials, biomedical, or algorithmic breakthrough — **without exclusive filtering or uneven priority weighting**:
+All domains below are included alongside any other high-signal non-silicon frontier science, energy, materials, biomedical, or algorithmic breakthrough — **without exclusive filtering or uneven priority weighting**:
 
 1. **Biotechnology & Synthetic Biology (`biotech & synthetic biology`)**
    * Base and prime genome editing (`CRISPR-Cas9/Cas12/Cas13`, base editors, prime editors, `pegRNA`, epigenome editing).
@@ -32,26 +32,33 @@ All six domains below are included alongside any other high-signal non-silicon f
    * Autonomous magnetic nanorobots (helical microswimmers, magnetically guided intravascular microrobots, biohybrid microrobots).
    * *Mandate boundary*: Tracks mechanical kinematic actuation, soft/biomimetic materials, and physical embodiment; filters out standalone inference silicon and data center GPUs.
 
-5. **Planetary Environmental Engineering (`planetary environmental engineering`)**
-   * Large-scale direct air capture (`DAC`) facilities (solid sorbent contactors, liquid solvent calcination, electro-swing / moisture-swing adsorption, geologic carbon mineralization).
-   * Ocean alkalinity enhancement (`OAE`, marine carbon dioxide removal / `mCDR`, electrochemical direct ocean capture / `DOC`).
-   * Enhanced rock weathering (`ERW`, crushed basalt/olivine/silicate amendment, terrestrial carbon mineralization kinetics).
+5. **Advanced Energy & Planetary Systems (`advanced energy & planetary systems`)**
+   * Magnetic & Inertial Confinement Fusion (tokamaks, stellarators, HTS magnets, high-yield laser compression for net-positive, zero-carbon baseload electricity).
+   * Small Modular & Molten-Salt Fission Reactors (`SMRs` / `MSRs` delivering walk-away-safe, factory-manufactured nuclear power using unpressurized coolant and consuming legacy nuclear waste).
+   * Beyond-Lithium & Solid-State Batteries (sulfide/ceramic solid electrolytes, metallic lithium anodes doubling volumetric energy density, sodium-ion / Li-S / Li-air chemistries).
+   * Direct Air Capture (`DAC`) & Ocean Mineralization (gigaton-scale atmospheric and oceanic carbon removal through chemical sorbents, ocean alkalinity enhancement / `OAE`, and enhanced rock weathering / `ERW`).
+   * Deep Geothermal Drilling (millimeter-wave directed-energy / gyrotron or advanced hammer systems drilling 10+ km into crystalline basement rock for ubiquitous thermal baseload).
 
-6. **Pure Cryptography, Frontier Foundation Models, Test-Time Compute & Autonomous Agent Swarms (`cryptography, frontier AI & autonomous agent swarms`)**
+6. **Advanced Materials & Nanotechnology (`advanced materials & nanotechnology`)**
+   * 2D Materials & Van der Waals Heterostructures (electronic, thermal, and barrier properties of monolayer graphene, hexagonal boron nitride / `hBN`, transition metal dichalcogenides / `TMDs`, `MXenes`).
+   * Electromagnetic & Acoustic Metamaterials (sub-wavelength engineered surface geometry subverting classical Snell's and acoustic laws to bend, cloak, and focus waves).
+   * Ultra-High-Temperature Ceramics (`UHTCs`: `ZrB2`, `HfB2`, `HfC`, `TaC` maintaining structural integrity and oxidation resistance above 2,000°C for hypersonic flight surfaces and atmospheric re-entry shields).
+
+7. **Pure Cryptography, Frontier Foundation Models, Test-Time Compute & Autonomous Agent Swarms (`cryptography, frontier AI & autonomous agent swarms`)**
    * Zero-knowledge proof (`ZKP`) protocols (`zk-SNARKs`, `zk-STARKs`, `PlonK`, folding schemes, `Nova`, `zkVMs`, verifiable computation).
    * Post-quantum lattice cryptography (`ML-KEM` / Kyber, `ML-DSA` / Dilithium, `SPHINCS+`, `FALCON`, `LWE` / `RLWE` lattice cryptography).
    * Fully homomorphic encryption (`FHE`) algorithms (`TFHE`, `CKKS`, `BFV`/`BGV`, programmable bootstrapping, multi-party computation / `MPC`).
    * Frontier Foundation Models & Test-Time Compute (dynamic inference-time reasoning, process reward models / `PRMs`, `MCTS` search, and formal verification).
    * Autonomous Agent Swarms (self-directing multi-agent systems that plan, write code, execute workflows, and recursively optimize their own prompts and architectures).
 
-7. **Other Frontier Deep-Tech & Hard Science (`other frontier deep-tech`)**
-   * Nuclear fusion, advanced energy storage, novel superconductors, metamaterials, advanced chemical synthesis, and other verifiable technical breakthroughs outside terrestrial data center silicon.
+8. **Other Frontier Deep-Tech & Hard Science (`other frontier deep-tech`)**
+   * Novel superconductors, advanced chemical synthesis, and other verifiable technical breakthroughs outside terrestrial data center silicon.
 
 ## Pipeline Architecture
 
 1. **`.env` Control Plane**: Drives `ENABLE_*` switches, per-source caps (`*_MAX_ITEMS*`), `ARXIV_CATEGORIES`, and `Label=URL;;pattern` feed/scraper specifications (`get_feed_specs()`).
 2. **Multi-Channel Fetchers + 4-Stage 403-Resilient HTML Scraper**:
-   * Pulls candidate preprints and articles from `arXiv` (`q-bio.*`, `cs.RO`, `cs.CR`, `cs.MA`, `cs.AI`, `cs.CL`, `cs.LG`, `cs.LO`, `physics.space-ph`, `astro-ph.IM`, `physics.ao-ph`, `physics.flu-dyn`), `SPECIALIST_RSS_FEEDS` (`GEN Biotechnology`, `Labiotech.eu`, `SynBioBeta`, `Neuroscience News`, `SpaceNews`, `NASASpaceFlight`, `Payload Space`, `The Robot Report`, `IEEE Spectrum Robotics`, `Carbon Herald`, `IACR Cryptology ePrint`), `SUPPLY_CHAIN_RSS_FEEDS` (`Ars Technica Science`, `Quanta Magazine`, `Canary Media`), `Hacker News`, `Techmeme`, and `HTML_SCRAPER_TARGETS` (`STAT News Biotech`, `SpaceNews Launch`, `Carbon Herald Capture`).
+   * Pulls candidate preprints and articles from `arXiv` (`q-bio.*`, `cs.RO`, `cs.CR`, `cs.MA`, `cs.AI`, `cs.CL`, `cs.LG`, `cs.LO`, `physics.space-ph`, `astro-ph.IM`, `physics.ao-ph`, `physics.flu-dyn`, `physics.plasm-ph`, `cond-mat.mtrl-sci`, `cond-mat.mes-hall`, `physics.optics`, `physics.app-ph`), `SPECIALIST_RSS_FEEDS` (`GEN Biotechnology`, `Labiotech.eu`, `SynBioBeta`, `Neuroscience News`, `SpaceNews`, `NASASpaceFlight`, `Payload Space`, `The Robot Report`, `IEEE Spectrum Robotics`, `Carbon Herald`, `World Nuclear News`, `ThinkGeoEnergy`, `Energy Storage News`, `Nanowerk`, `Phys.org Materials`, `IACR Cryptology ePrint`), `SUPPLY_CHAIN_RSS_FEEDS` (`Ars Technica Science`, `Quanta Magazine`, `Canary Media`), `Hacker News`, `Techmeme`, and `HTML_SCRAPER_TARGETS` (`STAT News Biotech`, `SpaceNews Launch`, `Carbon Herald Capture`).
    * `scrape_single_html_target()` cascades through (1) Chrome navigation headers + JSON-LD/DOM extraction, (2) WordPress REST API (`/wp-json/wp/v2/posts`), (3) Wayback Machine raw `id_` snapshots, and (4) domain-indexed fallback.
 3. **Unbiased Round-Robin Queue Capping & Optional Signal Tagging**:
    * `fair_cap_items()` performs pure round-robin interleaving across all active sources with zero topic-priority sorting.
