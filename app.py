@@ -4,37 +4,47 @@ from fetchers import *
 
 _last_flush_time = utc_now()
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").strip().lower()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite").strip()
-
 # =========================
-# Gemini / OpenRouter classification
+# LLM classification (OpenRouter + Official Gemini API)
 # =========================
 
-
-def resolve_llm_provider():
-    """Select active LLM backend while keeping both OpenRouter and Gemini available.
-    - LLM_PROVIDER=gemini -> official Gemini API
-    - LLM_PROVIDER=openrouter -> OpenRouter API
-    - LLM_PROVIDER=auto (or unset) -> Gemini if OPENROUTER_MODEL is empty
-      (or if OPENROUTER_API_KEY is empty and GEMINI_API_KEY is set), else OpenRouter.
-    """
-    if LLM_PROVIDER == "gemini":
-        return "gemini"
-    if LLM_PROVIDER == "openrouter":
-        return "openrouter"
-    if LLM_PROVIDER not in ("", "auto"):
-        log.warning(f"Unknown LLM_PROVIDER={LLM_PROVIDER!r}; falling back to auto selection.")
-    if not OPENROUTER_MODEL:
-        return "gemini"
-    if not OPENROUTER_API_KEY and GEMINI_API_KEY:
-        return "gemini"
-    return "openrouter"
+SUPPORTED_LLM_PROVIDERS = {"openrouter", "gemini"}
 
 
-def active_llm_label():
-    return "Gemini" if resolve_llm_provider() == "gemini" else "OpenRouter"
+def _normalize_llm_provider(provider_name):
+    value = (provider_name or "").strip().lower()
+    if value in {"google", "gemini-official", "google-gemini"}:
+        return "gemini"
+    return value
+
+
+def _get_llm_provider_chain():
+    primary = _normalize_llm_provider(LLM_PROVIDER) or "openrouter"
+    if primary not in SUPPORTED_LLM_PROVIDERS:
+        log.warning(f"Unsupported LLM_PROVIDER={LLM_PROVIDER!r}; defaulting to 'openrouter'.")
+        primary = "openrouter"
+
+    chain = [primary]
+    fallback = _normalize_llm_provider(LLM_FALLBACK_PROVIDER)
+    if fallback:
+        if fallback not in SUPPORTED_LLM_PROVIDERS:
+            log.warning(f"Unsupported LLM_FALLBACK_PROVIDER={LLM_FALLBACK_PROVIDER!r}; ignoring fallback.")
+        elif fallback != primary:
+            chain.append(fallback)
+    return chain
+
+
+def _provider_display_name(provider):
+    if provider == "gemini":
+        return f"Gemini ({GEMINI_MODEL})"
+    return f"OpenRouter ({OPENROUTER_MODEL})"
+
+
+def _active_llm_label():
+    chain = _get_llm_provider_chain()
+    if len(chain) == 2:
+        return f"{_provider_display_name(chain[0])} -> fallback {_provider_display_name(chain[1])}"
+    return _provider_display_name(chain[0])
 
 
 def parse_llm_json(text, provider_name="LLM"):
@@ -61,17 +71,10 @@ def parse_llm_json(text, provider_name="LLM"):
     return parsed
 
 
-def _call_openrouter(system_prompt, user_prompt):
+def _call_openrouter_api(system_prompt, user_prompt):
     if not OPENROUTER_API_KEY:
         log.error(
-            "Missing OPENROUTER_API_KEY. Classification skipped; batch will be requeued "
-            "(capped by MAX_ITEM_RETRIES, currently %s)." % MAX_ITEM_RETRIES
-        )
-        return None
-    if not OPENROUTER_MODEL:
-        log.error(
-            "Missing OPENROUTER_MODEL while LLM_PROVIDER=openrouter. Classification skipped; "
-            "batch will be requeued (capped by MAX_ITEM_RETRIES, currently %s)." % MAX_ITEM_RETRIES
+            "Missing OPENROUTER_API_KEY. OpenRouter classification skipped."
         )
         return None
 
@@ -79,15 +82,15 @@ def _call_openrouter(system_prompt, user_prompt):
         "model": OPENROUTER_MODEL,
         "messages": [
             {"role": "system", "content": system_prompt.strip()},
-            {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)}
+            {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)},
         ],
         "temperature": 0.05,
-        "response_format": {"type": "json_object"}
+        "response_format": {"type": "json_object"},
     }
 
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
 
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -128,15 +131,13 @@ def _call_openrouter(system_prompt, user_prompt):
     return None
 
 
-def _call_gemini(system_prompt, user_prompt):
+def _call_gemini_api(system_prompt, user_prompt):
     if not GEMINI_API_KEY:
         log.error(
-            "Missing GEMINI_API_KEY. Classification skipped; batch will be requeued "
-            "(capped by MAX_ITEM_RETRIES, currently %s)." % MAX_ITEM_RETRIES
+            "Missing GEMINI_API_KEY. Gemini API classification skipped."
         )
         return None
 
-    model = (GEMINI_MODEL or "gemini-2.5-flash-lite").removeprefix("models/")
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt.strip()}]},
         "contents": [
@@ -156,7 +157,7 @@ def _call_gemini(system_prompt, user_prompt):
         "Content-Type": "application/json",
     }
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
     for attempt in range(3):
         try:
@@ -170,9 +171,23 @@ def _call_gemini(system_prompt, user_prompt):
             if response.status_code == 200:
                 data = response.json()
                 candidates_resp = data.get("candidates") or []
-                parts = (candidates_resp[0].get("content") or {}).get("parts") or [] if candidates_resp else []
-                text_parts = [p.get("text", "") for p in parts if isinstance(p, dict) and not p.get("thought")]
-                text = "".join(text_parts) if text_parts else "".join(p.get("text", "") for p in parts if isinstance(p, dict))
+                parts = (
+                    (candidates_resp[0].get("content") or {}).get("parts") or []
+                    if candidates_resp
+                    else []
+                )
+                text_parts = [
+                    part.get("text", "")
+                    for part in parts
+                    if isinstance(part, dict) and part.get("text") and not part.get("thought")
+                ]
+                text = "".join(text_parts)
+                if not text and parts:
+                    text = "".join(
+                        part.get("text", "")
+                        for part in parts
+                        if isinstance(part, dict) and part.get("text")
+                    )
 
                 if DEBUG_LLM:
                     log.debug(f"Gemini raw response:\n{text[:2500]}")
@@ -198,7 +213,7 @@ def _call_gemini(system_prompt, user_prompt):
 
 
 def classify_batch(candidates):
-    provider = resolve_llm_provider()
+    provider_chain = _get_llm_provider_chain()
 
     compact_items = []
     for index, item in enumerate(candidates):
@@ -267,9 +282,21 @@ Return only valid JSON using this schema:
         "items": compact_items,
     }
 
-    if provider == "gemini":
-        return _call_gemini(system_prompt, user_prompt)
-    return _call_openrouter(system_prompt, user_prompt)
+    for idx, provider in enumerate(provider_chain):
+        if idx > 0:
+            log.warning(f"Primary LLM provider failed; falling back to {_provider_display_name(provider)}.")
+        if provider == "gemini":
+            results = _call_gemini_api(system_prompt, user_prompt)
+        else:
+            results = _call_openrouter_api(system_prompt, user_prompt)
+        if results is not None:
+            return results
+
+    log.error(
+        "All configured LLM providers failed (%s). Batch will be requeued "
+        "(capped by MAX_ITEM_RETRIES, currently %s)." % (_active_llm_label(), MAX_ITEM_RETRIES)
+    )
+    return None
 
 
 def classify_and_insert(candidates):
@@ -280,10 +307,10 @@ def classify_and_insert(candidates):
 
     batches = list(chunk_list(candidates, LLM_BATCH_SIZE))
     total_batches = len(batches)
-    provider_label = active_llm_label()
+    llm_label = _active_llm_label()
 
     for i, batch in enumerate(batches, 1):
-        log.info(f"Processing batch {i}/{total_batches} with {provider_label} ({len(batch)} items)...")
+        log.info(f"Processing batch {i}/{total_batches} with {llm_label} ({len(batch)} items)...")
         
         results = classify_batch(batch)
         if results is None:
@@ -405,14 +432,9 @@ def fetch_all_sources() -> list:
 def touch_healthcheck():
     try:
         directory = os.path.dirname(HEALTHCHECK_FILE)
-        target_file = HEALTHCHECK_FILE
         if directory:
             os.makedirs(directory, exist_ok=True)
-            if not os.access(directory, os.W_OK):
-                fallback_dir = "/tmp/frontier_deeptech_data"
-                os.makedirs(fallback_dir, exist_ok=True)
-                target_file = os.path.join(fallback_dir, os.path.basename(HEALTHCHECK_FILE))
-        with open(target_file, "w") as fh:
+        with open(HEALTHCHECK_FILE, "w") as fh:
             fh.write(utc_now().isoformat())
     except Exception as exc:
         log.warning(f"Could not write healthcheck file {HEALTHCHECK_FILE}: {repr(exc)}")
@@ -538,8 +560,8 @@ def flush_queue():
         remaining = len(CANDIDATE_QUEUE)
 
     ts = utc_now().strftime("%H:%M:%S")
-    provider_label = active_llm_label()
-    log.info(f"[{ts}] Flushing {len(batch)} item(s) through {provider_label}. Remaining queued: {remaining}")
+    llm_label = _active_llm_label()
+    log.info(f"[{ts}] Flushing {len(batch)} item(s) through {llm_label}. Remaining queued: {remaining}")
 
     result = classify_and_insert(batch)
 
@@ -550,7 +572,7 @@ def flush_queue():
 
     inserted = result.get("inserted", 0)
     processed = result.get("processed", 0)
-    log.info(f"{provider_label} processed {processed} item(s); inserted {inserted} relevant item(s).")
+    log.info(f"{llm_label} processed {processed} item(s); inserted {inserted} relevant item(s).")
 
     _last_flush_time = utc_now()
     touch_healthcheck()
@@ -603,8 +625,8 @@ def log_flush_heartbeat():
 def print_config():
     log.info("Configuration:")
     log.info(f"DB_PATH: {DB_PATH}")
-    log.info(f"LLM_PROVIDER: {LLM_PROVIDER or 'auto'} (active: {resolve_llm_provider()})")
-    log.info(f"OPENROUTER_MODEL: {OPENROUTER_MODEL or '(empty)'}")
+    log.info(f"LLM_PROVIDER: {_get_llm_provider_chain()[0]} | LLM_FALLBACK_PROVIDER: {(_get_llm_provider_chain()[1] if len(_get_llm_provider_chain()) > 1 else 'none')}")
+    log.info(f"OPENROUTER_MODEL: {OPENROUTER_MODEL}")
     log.info(f"GEMINI_MODEL: {GEMINI_MODEL}")
     log.info(f"FETCH_MINUTES: {FETCH_MINUTES} (fetch and flush now run on independent timers)")
     log.info(f"MAX_CANDIDATES_PER_RUN: {MAX_CANDIDATES_PER_RUN}")

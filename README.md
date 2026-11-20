@@ -56,20 +56,21 @@ All domains below are included alongside any other high-signal non-silicon front
 
 ## Pipeline Architecture
 
-1. **`.env` Control Plane**: Drives `ENABLE_*` switches, per-source caps (`*_MAX_ITEMS*`), `ARXIV_CATEGORIES`, and `Label=URL;;pattern` feed/scraper specifications (`get_feed_specs()`).
+1. **`.env` Control Plane**: Drives `LLM_PROVIDER` (`openrouter` or `gemini`), optional `LLM_FALLBACK_PROVIDER`, `ENABLE_*` switches, per-source caps (`*_MAX_ITEMS*`), `ARXIV_CATEGORIES`, and `Label=URL;;pattern` feed/scraper specifications (`get_feed_specs()`).
 2. **Multi-Channel Fetchers + 4-Stage 403-Resilient HTML Scraper**:
    * Pulls candidate preprints and articles from `arXiv` (`q-bio.*`, `cs.RO`, `cs.CR`, `cs.MA`, `cs.AI`, `cs.CL`, `cs.LG`, `cs.LO`, `physics.space-ph`, `astro-ph.IM`, `physics.ao-ph`, `physics.flu-dyn`, `physics.plasm-ph`, `cond-mat.mtrl-sci`, `cond-mat.mes-hall`, `physics.optics`, `physics.app-ph`), `SPECIALIST_RSS_FEEDS` (`GEN Biotechnology`, `Labiotech.eu`, `SynBioBeta`, `Neuroscience News`, `SpaceNews`, `NASASpaceFlight`, `Payload Space`, `The Robot Report`, `IEEE Spectrum Robotics`, `Carbon Herald`, `World Nuclear News`, `ThinkGeoEnergy`, `Energy Storage News`, `Nanowerk`, `Phys.org Materials`, `IACR Cryptology ePrint`), `SUPPLY_CHAIN_RSS_FEEDS` (`Ars Technica Science`, `Quanta Magazine`, `Canary Media`), `Hacker News`, `Techmeme`, and `HTML_SCRAPER_TARGETS` (`STAT News Biotech`, `SpaceNews Launch`, `Carbon Herald Capture`).
    * `scrape_single_html_target()` cascades through (1) Chrome navigation headers + JSON-LD/DOM extraction, (2) WordPress REST API (`/wp-json/wp/v2/posts`), (3) Wayback Machine raw `id_` snapshots, and (4) domain-indexed fallback.
 3. **Unbiased Round-Robin Queue Capping**:
-   * `fair_cap_items()` performs pure round-robin interleaving across all active sources with zero topic-priority sorting or regex pre-filtering; classification is handled entirely by the OpenRouter LLM prompt.
-4. **OpenRouter LLM Batch Classification & SQLite WAL Persistence**:
-   * `classify_batch()` scores candidates (`0-10`) across all non-silicon frontier deep-tech domains equally, permanently rejects terrestrial semiconductor/datacenter hardware and generic corporate noise, and persists verified items (`score >= 7.0`) to `/app/data/frontier_deeptech_trends.db` (SQLite WAL mode on a managed Docker named volume `bot-data`) with immediate Telegram alerts (`score >= 7.5`) and periodic digests.
+   * `fair_cap_items()` performs pure round-robin interleaving across all active sources with zero topic-priority sorting or regex pre-filtering; classification is handled entirely by the LLM prompt.
+4. **Dual-Provider LLM Batch Classification (OpenRouter + Official Gemini API) & SQLite WAL Persistence**:
+   * `classify_batch()` supports both **OpenRouter** (`OPENROUTER_API_KEY`, `OPENROUTER_MODEL`) and Google's **Official Gemini API** (`GEMINI_API_KEY`, `GEMINI_MODEL` via `generativelanguage.googleapis.com`). Set `LLM_PROVIDER=openrouter` (default) or `LLM_PROVIDER=gemini`, and optionally set `LLM_FALLBACK_PROVIDER` for automatic failover.
+   * Scores candidates (`0-10`) across all non-silicon frontier deep-tech domains equally, permanently rejects terrestrial semiconductor/datacenter hardware and generic corporate noise, and persists verified items (`score >= 7.0`) to `/app/data/frontier_deeptech_trends.db` (SQLite WAL mode on a managed Docker named volume `bot-data`) with immediate Telegram alerts (`score >= 7.5`) and periodic digests.
 
 ## Quick Start (Docker Compose)
 
 ```bash
 cp .env.example .env
-# Edit .env with your OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID
+# Edit .env with your LLM_PROVIDER (openrouter or gemini), OPENROUTER_API_KEY / GEMINI_API_KEY, TELEGRAM_BOT_TOKEN, and TELEGRAM_CHAT_ID
 docker compose up -d --build
 docker compose logs -f
 ```

@@ -105,8 +105,14 @@ DB_PATH = os.getenv("DB_PATH", "/app/data/frontier_deeptech_trends.db").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openrouter").strip().lower()
+LLM_FALLBACK_PROVIDER = os.getenv("LLM_FALLBACK_PROVIDER", "").strip().lower()
+
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "deepseek/deepseek-v4-flash").strip()
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
 
 # Safer default: fetch every 10 minutes, not every minute.
 FETCH_MINUTES = get_int("FETCH_MINUTES", 10)
@@ -370,20 +376,9 @@ def feed_record_result(feed_url, success):
 
 
 def ensure_db_directory():
-    global DB_PATH
     directory = os.path.dirname(DB_PATH)
     if directory:
         os.makedirs(directory, exist_ok=True)
-        if not os.access(directory, os.W_OK):
-            fallback_dir = "/tmp/frontier_deeptech_data"
-            os.makedirs(fallback_dir, exist_ok=True)
-            fallback_path = os.path.join(fallback_dir, os.path.basename(DB_PATH))
-            log.warning(
-                f"Directory '{directory}' is not writable by UID {os.getuid()} "
-                f"(check host bind-mount permissions, e.g., chown 1000:1000 ./data). "
-                f"Falling back to {fallback_path}"
-            )
-            DB_PATH = fallback_path
 
 
 def chunk_list(values, size):
@@ -425,7 +420,6 @@ def fair_cap_items(items, max_items):
 def connect_db():
     conn = getattr(_thread_local, "conn", None)
     if conn is None:
-        ensure_db_directory()
         conn = sqlite3.connect(DB_PATH, timeout=30)
         conn.row_factory = sqlite3.Row
         _thread_local.conn = conn
