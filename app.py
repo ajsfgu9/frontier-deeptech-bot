@@ -47,6 +47,18 @@ def _active_llm_label():
     return _provider_display_name(chain[0])
 
 
+def _retry_wait_seconds(response, attempt):
+    """Respect numeric Retry-After headers when present, otherwise exponential backoff."""
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return max(1, min(60, int(float(retry_after))))
+            except ValueError:
+                pass
+    return min(60, 10 * (2 ** attempt))
+
+
 def parse_llm_json(text, provider_name="LLM"):
     if not text:
         raise ValueError("Empty response text.")
@@ -115,7 +127,7 @@ def _call_openrouter_api(system_prompt, user_prompt):
                 return parsed.get("results", [])
 
             if response.status_code in [429, 500, 502, 503, 504]:
-                wait_seconds = 10 * (attempt + 1)
+                wait_seconds = _retry_wait_seconds(response, attempt)
                 log.warning(f"OpenRouter temporary error {response.status_code}. Retrying in {wait_seconds}s. {response.text[:500]}")
                 time.sleep(wait_seconds)
                 continue
@@ -124,7 +136,7 @@ def _call_openrouter_api(system_prompt, user_prompt):
             return None
 
         except Exception as exc:
-            wait_seconds = 10 * (attempt + 1)
+            wait_seconds = _retry_wait_seconds(None, attempt)
             log.warning(f"OpenRouter exception: {repr(exc)}. Retrying in {wait_seconds}s.")
             time.sleep(wait_seconds)
 
@@ -138,6 +150,7 @@ def _call_gemini_api(system_prompt, user_prompt):
         )
         return None
 
+    model = (GEMINI_MODEL or "gemini-3.5-flash-lite").removeprefix("models/")
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt.strip()}]},
         "contents": [
@@ -157,7 +170,7 @@ def _call_gemini_api(system_prompt, user_prompt):
         "Content-Type": "application/json",
     }
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
     for attempt in range(3):
         try:
@@ -196,7 +209,7 @@ def _call_gemini_api(system_prompt, user_prompt):
                 return parsed.get("results", [])
 
             if response.status_code in [429, 500, 502, 503, 504]:
-                wait_seconds = 10 * (attempt + 1)
+                wait_seconds = _retry_wait_seconds(response, attempt)
                 log.warning(f"Gemini temporary error {response.status_code}. Retrying in {wait_seconds}s. {response.text[:500]}")
                 time.sleep(wait_seconds)
                 continue
@@ -205,7 +218,7 @@ def _call_gemini_api(system_prompt, user_prompt):
             return None
 
         except Exception as exc:
-            wait_seconds = 10 * (attempt + 1)
+            wait_seconds = _retry_wait_seconds(None, attempt)
             log.warning(f"Gemini exception: {repr(exc)}. Retrying in {wait_seconds}s.")
             time.sleep(wait_seconds)
 
@@ -311,7 +324,7 @@ def classify_and_insert(candidates):
 
     for i, batch in enumerate(batches, 1):
         log.info(f"Processing batch {i}/{total_batches} with {llm_label} ({len(batch)} items)...")
-        
+
         results = classify_batch(batch)
         if results is None:
             failed_items.extend(batch)
@@ -441,6 +454,7 @@ def touch_healthcheck():
 
 
 def fetch_and_enqueue():
+    started = time.monotonic()
     ts = utc_now().strftime("%H:%M:%S")
     log.info(f"[{ts}] Fetching all sources...")
     raw_items = fetch_all_sources()
@@ -515,9 +529,10 @@ def fetch_and_enqueue():
 
         depth = len(CANDIDATE_QUEUE)
 
+    elapsed = time.monotonic() - started
     if dropped:
         log.warning(f"[{ts}] Queue full. Dropped {dropped} overflow item(s). Increase CANDIDATE_QUEUE_MAX if needed.")
-    log.info(f"[{ts}] +{added} new items queued. Depth: {depth}")
+    log.info(f"[{ts}] +{added} new items queued in {elapsed:.1f}s. Depth: {depth}")
     touch_healthcheck()
 
 
@@ -615,9 +630,9 @@ def log_flush_heartbeat():
     with _queue_lock:
         depth = len(CANDIDATE_QUEUE)
         last_flush = _last_flush_time.strftime("%Y-%m-%d %H:%M:%S UTC") if _last_flush_time else "Never"
-    
+
     log.info(
-        f"⏱️ [FLUSH HEARTBEAT] 1-second background check is active and healthy. "
+        f"⏱️ [FLUSH HEARTBEAT] {CHECK_QUEUE_SECONDS}s background check is active and healthy. "
         f"Current queue depth: {depth}/{CANDIDATE_QUEUE_MAX} | Last flush: {last_flush}"
     )
 
@@ -636,6 +651,8 @@ def print_config():
     log.info(f"CHECK_QUEUE_SECONDS: {CHECK_QUEUE_SECONDS}")
     log.info(f"FORCE_FLUSH_MINUTES: {FORCE_FLUSH_MINUTES}")
     log.info(f"MAX_ITEM_RETRIES: {MAX_ITEM_RETRIES}")
+    log.info(f"FEED_FAILURE_THRESHOLD: {FEED_FAILURE_THRESHOLD} | FEED_COOLDOWN_MINUTES: {FEED_COOLDOWN_MINUTES} | WAYBACK_MAX_AGE_DAYS: {WAYBACK_MAX_AGE_DAYS}")
+    log.info(f"RSS_FETCH_WORKERS: {RSS_FETCH_WORKERS} | ARXIV_MIN_POLL_MINUTES: {ARXIV_MIN_POLL_MINUTES}")
     log.info(f"DIGEST_MINUTES: {DIGEST_MINUTES}")
     log.info(f"LLM_BATCH_SIZE: {LLM_BATCH_SIZE}")
     log.info(f"LLM_MIN_SCORE: {LLM_MIN_SCORE}")
@@ -706,19 +723,24 @@ def main():
     class SilentExecutorsFilter(logging.Filter):
         def filter(self, record):
             msg = record.getMessage()
-            if "maybe_flush" in msg and ("Running job" in msg or "executed successfully" in msg):
+            if "maybe_flush" in msg and (
+                "Running job" in msg
+                or "executed successfully" in msg
+                or "maximum number of running instances reached" in msg
+            ):
                 return False
             return True
 
-    logging.root.addFilter(SilentExecutorsFilter())
+    silent_filter = SilentExecutorsFilter()
+    logging.root.addFilter(silent_filter)
     for handler in logging.root.handlers:
-        handler.addFilter(SilentExecutorsFilter())
+        handler.addFilter(silent_filter)
 
     for name in ["apscheduler", "apscheduler.scheduler", "apscheduler.executors.default", "apscheduler.executors.pool"]:
         exec_log = logging.getLogger(name)
         exec_log.setLevel(logging.WARNING)
-        exec_log.propagate = False
-        exec_log.addFilter(SilentExecutorsFilter())
+        exec_log.propagate = True
+        exec_log.addFilter(silent_filter)
 
     scheduler.start()
     log.info("Scheduler active. Main thread blocking.")

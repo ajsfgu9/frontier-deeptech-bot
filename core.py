@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin
 
 load_dotenv()
 
@@ -122,13 +122,14 @@ DIGEST_MINUTES = get_int("DIGEST_MINUTES", 360)
 # over a 10-minute window, while preventing unlimited token/API pressure.
 MAX_CANDIDATES_PER_RUN = get_int("MAX_CANDIDATES_PER_RUN", 180)
 MAX_CANDIDATES_PER_FLUSH = get_int("MAX_CANDIDATES_PER_FLUSH", 96)
-CANDIDATE_QUEUE_MAX = get_int("CANDIDATE_QUEUE_MAX", 360)
+CANDIDATE_QUEUE_MAX = get_int("CANDIDATE_QUEUE_MAX", 600)
 
 LLM_BATCH_SIZE = max(1, get_int("LLM_BATCH_SIZE", 8))
 LLM_MIN_SCORE = get_float("LLM_MIN_SCORE", 7.0)
 ALERT_THRESHOLD = get_float("ALERT_THRESHOLD", 8.5)
 
 ARXIV_RESULTS_PER_CATEGORY = get_int("ARXIV_RESULTS_PER_CATEGORY", 6)
+ARXIV_MIN_POLL_MINUTES = max(0, get_int("ARXIV_MIN_POLL_MINUTES", 30))
 HN_NEW_STORIES_PER_RUN = get_int("HN_NEW_STORIES_PER_RUN", 80)
 TECHMEME_MAX_ITEMS = get_int("TECHMEME_MAX_ITEMS", 40)
 
@@ -137,6 +138,7 @@ DIGEST_MAX_ITEMS = get_int("DIGEST_MAX_ITEMS", 20)
 SEND_EMPTY_DIGEST = get_bool("SEND_EMPTY_DIGEST", False)
 INCLUDE_ALERTS_IN_DIGEST = get_bool("INCLUDE_ALERTS_IN_DIGEST", False)
 SEND_RAW_FETCH_REPORT = get_bool("SEND_RAW_FETCH_REPORT", False)
+SEND_RAW_FETCH_JSON = get_bool("SEND_RAW_FETCH_JSON", False)
 
 ENABLE_ARXIV = get_bool("ENABLE_ARXIV", True)
 ENABLE_HACKERNEWS = get_bool("ENABLE_HACKERNEWS", True)
@@ -153,9 +155,11 @@ MAX_ITEM_RETRIES = get_int("MAX_ITEM_RETRIES", 5)
 
 FEED_FAILURE_THRESHOLD = get_int("FEED_FAILURE_THRESHOLD", 4)
 FEED_COOLDOWN_MINUTES = get_int("FEED_COOLDOWN_MINUTES", 180)
+WAYBACK_MAX_AGE_DAYS = max(1, get_int("WAYBACK_MAX_AGE_DAYS", 7))
 
-HN_FETCH_WORKERS = get_int("HN_FETCH_WORKERS", 8)
-ARXIV_FETCH_WORKERS = get_int("ARXIV_FETCH_WORKERS", 4)
+HN_FETCH_WORKERS = max(1, get_int("HN_FETCH_WORKERS", 8))
+ARXIV_FETCH_WORKERS = max(1, get_int("ARXIV_FETCH_WORKERS", 4))
+RSS_FETCH_WORKERS = max(1, get_int("RSS_FETCH_WORKERS", 6))
 
 HEALTHCHECK_FILE = os.getenv("HEALTHCHECK_FILE", "/app/data/heartbeat.txt").strip()
 
@@ -169,9 +173,6 @@ DEFAULT_ARXIV_CATEGORIES = [
 ]
 ARXIV_CATEGORIES = get_csv("ARXIV_CATEGORIES", DEFAULT_ARXIV_CATEGORIES)
 
-SEND_RAW_FETCH_REPORT = get_bool("SEND_RAW_FETCH_REPORT", False)
-SEND_RAW_FETCH_JSON = get_bool("SEND_RAW_FETCH_JSON", False)
-
 
 # =========================
 # Expanded high-signal sources
@@ -183,13 +184,13 @@ SPECIALIST_RSS_MAX_ITEMS_PER_FEED = get_int("SPECIALIST_RSS_MAX_ITEMS_PER_FEED",
 DEFAULT_SPECIALIST_RSS_FEEDS = [
     ("GEN Biotechnology", "https://www.genengnews.com/feed/"),
     ("Labiotech.eu", "https://www.labiotech.eu/feed/"),
-    ("SynBioBeta", "https://www.synbiobeta.com/feed;;https://news.google.com/rss/search?q=site:synbiobeta.com+when:7d&hl=en-US&gl=US&ceid=US:en"),
+    ("SynBioBeta", "https://news.google.com/rss/search?q=site:synbiobeta.com+when:7d&hl=en-US&gl=US&ceid=US:en"),
     ("Neuroscience News", "https://neurosciencenews.com/feed/"),
     ("SpaceNews", "https://spacenews.com/feed/"),
-    ("NASASpaceFlight", "https://www.nasaspaceflight.com/feed/"),
-    ("Payload Space", "https://payloadspace.com/feed/"),
-    ("The Robot Report", "https://www.therobotreport.com/feed/"),
-    ("IEEE Spectrum Robotics", "https://spectrum.ieee.org/feeds/topic/robotics.rss"),
+    ("NASASpaceFlight", "https://www.nasaspaceflight.com/feed/;;https://news.google.com/rss/search?q=site:nasaspaceflight.com+when:7d&hl=en-US&gl=US&ceid=US:en"),
+    ("Payload Space", "https://payloadspace.com/feed/;;https://news.google.com/rss/search?q=site:payloadspace.com+when:7d&hl=en-US&gl=US&ceid=US:en"),
+    ("The Robot Report", "https://www.therobotreport.com/feed/;;https://news.google.com/rss/search?q=site:therobotreport.com+when:7d&hl=en-US&gl=US&ceid=US:en"),
+    ("IEEE Spectrum Robotics", "https://spectrum.ieee.org/rss/robotics/fulltext;;https://spectrum.ieee.org/feeds/topic/robotics.rss;;https://news.google.com/rss/search?q=site:spectrum.ieee.org+robotics+when:7d&hl=en-US&gl=US&ceid=US:en"),
     ("Carbon Herald", "https://carbonherald.com/feed/"),
     ("World Nuclear News", "https://www.world-nuclear-news.org/rss"),
     ("ThinkGeoEnergy", "https://www.thinkgeoenergy.com/feed/"),
@@ -203,8 +204,8 @@ DEFAULT_SPECIALIST_RSS_FEEDS = [
 ENABLE_SUPPLY_CHAIN_RSS = get_bool("ENABLE_SUPPLY_CHAIN_RSS", True)
 SUPPLY_CHAIN_RSS_MAX_ITEMS_PER_FEED = get_int("SUPPLY_CHAIN_RSS_MAX_ITEMS_PER_FEED", 12)
 DEFAULT_SUPPLY_CHAIN_RSS_FEEDS = [
-    ("Ars Technica Science", "https://feeds.arstechnica.com/arstechnica/science"),
-    ("Quanta Magazine", "https://www.quantamagazine.org/feed/"),
+    ("Ars Technica Science", "https://feeds.arstechnica.com/arstechnica/science;;https://arstechnica.com/science/feed/"),
+    ("Quanta Magazine", "https://www.quantamagazine.org/feed/;;https://api.quantamagazine.org/feed/"),
     ("Canary Media", "https://www.canarymedia.com/rss.rss"),
 ]
 
@@ -213,7 +214,7 @@ HTML_SCRAPER_MAX_ITEMS_PER_SITE = get_int("HTML_SCRAPER_MAX_ITEMS_PER_SITE", 12)
 
 DEFAULT_HTML_SCRAPER_TARGETS = [
     ("STAT News Biotech", "https://www.statnews.com/category/biotech/;;/20\\d{2}/\\d{2}/\\d{2}/[a-z0-9-]+"),
-    ("SpaceNews Launch", "https://spacenews.com/segment/launch/;;/20\\d{2}/[a-z0-9-]+"),
+    ("SpaceNews Launch", "https://spacenews.com/segment/launch/"),
     ("Carbon Herald Capture", "https://carbonherald.com/category/carbon-capture/;;/[a-z0-9-]+/"),
 ]
 
@@ -239,6 +240,12 @@ REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
     "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml, text/html, application/json;q=0.9, */*;q=0.8",
     "Accept-Language": "en-US,en;q=0.5",
+}
+
+RSS_BOT_HEADERS = {
+    "User-Agent": "FrontierDeepTechBot/2.4 (+https://github.com/ajsfgu9/frontier-deeptech-bot; RSS/Atom aggregator)",
+    "Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml;q=0.9, */*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.8",
 }
 
 HTML_BROWSER_HEADERS = {
@@ -356,6 +363,23 @@ def item_fingerprint(item):
     return title_fingerprint(title)
 
 
+def feed_get_cache_headers(feed_url):
+    with _feed_state_lock:
+        cached = FEED_CACHE_HEADERS.get(feed_url)
+        return dict(cached) if cached else {}
+
+
+def feed_set_cache_headers(feed_url, etag=None, last_modified=None):
+    if not etag and not last_modified:
+        return
+    with _feed_state_lock:
+        existing = FEED_CACHE_HEADERS.get(feed_url) or {}
+        FEED_CACHE_HEADERS[feed_url] = {
+            "etag": etag or existing.get("etag"),
+            "last_modified": last_modified or existing.get("last_modified"),
+        }
+
+
 def feed_should_skip_live(feed_url):
     with _feed_state_lock:
         state = FEED_FAILURE_STATE.get(feed_url)
@@ -363,16 +387,20 @@ def feed_should_skip_live(feed_url):
     return bool(cooldown_until and utc_now() < cooldown_until)
 
 
-def feed_record_result(feed_url, success):
+def feed_record_result(feed_url, success, permanent=False):
+    """Record a fetch outcome for feed_url. Returns True when transitioning into cooldown."""
     with _feed_state_lock:
         state = FEED_FAILURE_STATE.setdefault(feed_url, {"consecutive_failures": 0, "cooldown_until": None})
+        was_cooling = bool(state["cooldown_until"] and utc_now() < state["cooldown_until"])
         if success:
             state["consecutive_failures"] = 0
             state["cooldown_until"] = None
-        else:
-            state["consecutive_failures"] += 1
-            if state["consecutive_failures"] >= FEED_FAILURE_THRESHOLD:
-                state["cooldown_until"] = utc_now() + dt.timedelta(minutes=FEED_COOLDOWN_MINUTES)
+            return False
+        state["consecutive_failures"] += 1
+        if permanent or state["consecutive_failures"] >= FEED_FAILURE_THRESHOLD:
+            state["cooldown_until"] = utc_now() + dt.timedelta(minutes=FEED_COOLDOWN_MINUTES)
+            return not was_cooling
+        return False
 
 
 def ensure_db_directory():
@@ -716,21 +744,22 @@ def send_telegram(message):
 
     return success
 
+
 def send_telegram_document(filename, text_content):
     """Sends a text string as a downloadable file to Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
 
     api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
-    
+
     files = {
-        "document": (filename, text_content.encode('utf-8'))
+        "document": (filename, text_content.encode("utf-8"))
     }
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "caption": "📊 Raw fetched titles (pre-deduplication)"
     }
-    
+
     try:
         response = requests.post(api_url, data=payload, files=files, timeout=30)
         if response.status_code != 200:
@@ -740,6 +769,7 @@ def send_telegram_document(filename, text_content):
     except Exception as exc:
         log.warning(f"Telegram document sending exception: {repr(exc)}")
         return False
+
 
 def format_item_html(row, include_score=True):
     title = html_escape(row["title"])
@@ -794,9 +824,9 @@ def send_immediate_alerts(alert_items):
 def send_digest():
     conn = connect_db()
     cur = conn.cursor()
-    
+
     time_window = (utc_now() - dt.timedelta(hours=24)).isoformat()
-    
+
     cur.execute(
         """
         SELECT * FROM items
@@ -835,14 +865,15 @@ def send_digest():
     log.info(f"Sent {len(ids)} digest items.")
     return len(ids)
 
+
 def send_raw_json_dump(raw_items):
     """Sends all raw fetched items as an uncleaned JSON file to Telegram."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
-    
+
     api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendDocument"
     filename = f"raw_fetch_dump_{utc_now().strftime('%Y%m%d_%H%M%S')}.json"
-    
+
     try:
         json_content = json.dumps(raw_items, indent=2, ensure_ascii=False)
     except Exception as exc:
@@ -857,7 +888,7 @@ def send_raw_json_dump(raw_items):
         "caption": f"📁 <b>Raw JSON Fetch Dump</b>\nTotal items: {len(raw_items)} (Pre-cleaning & pre-slicing)",
         "parse_mode": "HTML"
     }
-    
+
     try:
         response = requests.post(api_url, data=payload, files=files, timeout=45)
         if response.status_code != 200:

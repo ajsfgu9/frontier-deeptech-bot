@@ -1,22 +1,61 @@
 from core import *
+from core import _feed_state_lock
 
 # =========================
 # Source fetchers
 # =========================
 
-
 ARXIV_HEADERS = {
-    "User-Agent": "frontier-deeptech-trend-bot/1.0 (contact: your-real-email@example.com)"
+    "User-Agent": os.getenv(
+        "ARXIV_USER_AGENT",
+        "Frontier-DeepTech-Trend-Bot/2.4 (+https://github.com/ajsfgu9/frontier-deeptech-bot)",
+    ).strip()
+}
+
+_arxiv_poll_lock = Lock()
+_arxiv_last_poll_time = None
+
+# Tracks the last seen Wayback snapshot timestamp per URL so repeated cycles
+# do not re-download and re-parse identical archived snapshots.
+_WAYBACK_LAST_TS: dict = {}
+
+# Automatic fallback URLs for legacy or WAF/403/404-prone endpoints so existing
+# server .env files recover cleanly without requiring manual URL edits.
+DEPRECATED_FEED_URL_FALLBACKS = {
+    "https://api.quantamagazine.org/v1/rss": [
+        "https://www.quantamagazine.org/feed/",
+        "https://api.quantamagazine.org/feed/",
+    ],
+    "https://www.synbiobeta.com/feed": [
+        "https://news.google.com/rss/search?q=site:synbiobeta.com+when:7d&hl=en-US&gl=US&ceid=US:en",
+    ],
+    "https://spectrum.ieee.org/feeds/topic/robotics.rss": [
+        "https://spectrum.ieee.org/rss/robotics/fulltext",
+        "https://news.google.com/rss/search?q=site:spectrum.ieee.org+robotics+when:7d&hl=en-US&gl=US&ceid=US:en",
+    ],
+    "https://feeds.arstechnica.com/arstechnica/science": [
+        "https://arstechnica.com/science/feed/",
+    ],
+    "https://www.nasaspaceflight.com/feed": [
+        "https://news.google.com/rss/search?q=site:nasaspaceflight.com+when:7d&hl=en-US&gl=US&ceid=US:en",
+    ],
+    "https://payloadspace.com/feed": [
+        "https://news.google.com/rss/search?q=site:payloadspace.com+when:7d&hl=en-US&gl=US&ceid=US:en",
+    ],
+    "https://www.therobotreport.com/feed": [
+        "https://news.google.com/rss/search?q=site:therobotreport.com+when:7d&hl=en-US&gl=US&ceid=US:en",
+    ],
+}
+
+_NON_HTML_FALLBACK_HOSTS = {
+    "news.google.com",
+    "feeds.feedburner.com",
+    "rsshub.app",
 }
 
 
-def _fetch_arxiv_atom(url, max_retries=3, timeout=15):
-    """Direct fetch + parse of the arXiv Atom API, bypassing fetch_standard_rss
-    so category tags survive (fetch_standard_rss normalizes entries down to
-    title/url/summary and drops <category> tags, which is what caused every
-    bucket to come back 0/20 the first time this was tried). Minimal
-    retry/backoff since we lose fetch_standard_rss's shared resilience
-    wrapper (Wayback fallback, cooldown, conditional GET) for this source."""
+def _fetch_arxiv_atom(url, max_retries=3, timeout=20):
+    """Direct fetch + parse of the arXiv Atom API, preserving <category> tags."""
     last_exc = None
     for attempt in range(max_retries):
         try:
@@ -36,9 +75,7 @@ def _fetch_arxiv_atom(url, max_retries=3, timeout=15):
 
 
 def _parse_arxiv_entry(entry, category):
-    """Field names here MUST match what fetch_and_enqueue()/insert_item()
-    expect (url, source, source_type, published_at, raw_summary) — NOT the
-    raw feedparser/Atom names (link, published, summary)."""
+    """Field names here MUST match what fetch_and_enqueue()/insert_item() expect."""
     return {
         "title": clean_text(entry.get("title", "")),
         "url": normalize_url(entry.get("link", "")),
@@ -51,14 +88,30 @@ def _parse_arxiv_entry(entry, category):
 
 
 def fetch_arxiv():
-    """Fetch ARXIV_RESULTS_PER_CATEGORY items for each configured category
-    in a single combined API call."""
+    """Fetch ARXIV_RESULTS_PER_CATEGORY items for each configured category with
+    polite minimum poll spacing and a targeted backfill query for starved
+    low-volume categories.
+    """
+    global _arxiv_last_poll_time
+
     items = []
     if not ENABLE_ARXIV or not ARXIV_CATEGORIES:
         return items
 
+    with _arxiv_poll_lock:
+        if ARXIV_MIN_POLL_MINUTES > 0 and _arxiv_last_poll_time is not None:
+            elapsed = utc_now() - _arxiv_last_poll_time
+            min_gap = dt.timedelta(minutes=ARXIV_MIN_POLL_MINUTES)
+            if elapsed < min_gap:
+                remaining_min = (min_gap - elapsed).total_seconds() / 60.0
+                log.debug(
+                    f"arXiv: skipping poll ({remaining_min:.1f}m until next poll; "
+                    f"ARXIV_MIN_POLL_MINUTES={ARXIV_MIN_POLL_MINUTES})"
+                )
+                return items
+
     combined_query = "(" + " OR ".join(f"cat:{c}" for c in ARXIV_CATEGORIES) + ")"
-    max_results = ARXIV_RESULTS_PER_CATEGORY * len(ARXIV_CATEGORIES) * 10
+    max_results = min(2000, max(ARXIV_RESULTS_PER_CATEGORY * len(ARXIV_CATEGORIES) * 5, 200))
 
     params = {
         "search_query": combined_query,
@@ -74,19 +127,52 @@ def fetch_arxiv():
         return items
 
     buckets = {cat: [] for cat in ARXIV_CATEGORIES}
-    for entry in raw_entries:
-        entry_categories = [t.get("term") for t in entry.get("tags", []) if t.get("term")]
-        for cat in ARXIV_CATEGORIES:
-            if cat in entry_categories and len(buckets[cat]) < ARXIV_RESULTS_PER_CATEGORY:
-                buckets[cat].append(_parse_arxiv_entry(entry, cat))
+    bucket_urls = {cat: set() for cat in ARXIV_CATEGORIES}
+
+    def _fill_buckets(entries, target_cats):
+        for entry in entries:
+            entry_categories = [t.get("term") for t in entry.get("tags", []) if t.get("term")]
+            norm_link = normalize_url(entry.get("link", ""))
+            for cat in target_cats:
+                if (
+                    cat in entry_categories
+                    and len(buckets[cat]) < ARXIV_RESULTS_PER_CATEGORY
+                    and norm_link not in bucket_urls[cat]
+                ):
+                    bucket_urls[cat].add(norm_link)
+                    buckets[cat].append(_parse_arxiv_entry(entry, cat))
+
+    _fill_buckets(raw_entries, ARXIV_CATEGORIES)
+
+    # Low-volume categories (e.g. q-bio.TO, physics.space-ph) are often crowded out
+    # of a single combined query by high-volume cs.AI/cs.LG traffic. Run one small
+    # targeted backfill query for just the under-filled categories.
+    short_cats = [cat for cat in ARXIV_CATEGORIES if len(buckets[cat]) < ARXIV_RESULTS_PER_CATEGORY]
+    if short_cats:
+        time.sleep(1.5)
+        backfill_query = "(" + " OR ".join(f"cat:{c}" for c in short_cats) + ")"
+        backfill_max = min(1000, max(ARXIV_RESULTS_PER_CATEGORY * len(short_cats) * 5, 100))
+        backfill_params = {
+            "search_query": backfill_query,
+            "start": 0,
+            "max_results": backfill_max,
+            "sortBy": "submittedDate",
+            "sortOrder": "descending",
+        }
+        backfill_url = "https://export.arxiv.org/api/query?" + urlencode(backfill_params)
+        backfill_entries = _fetch_arxiv_atom(backfill_url, max_retries=2, timeout=20)
+        if backfill_entries:
+            _fill_buckets(backfill_entries, short_cats)
 
     for cat, bucketed in buckets.items():
         if len(bucketed) < ARXIV_RESULTS_PER_CATEGORY:
-            log.warning(
-                f"arXiv / {cat}: only {len(bucketed)} of "
-                f"{ARXIV_RESULTS_PER_CATEGORY} requested items found in combined fetch"
+            log.info(
+                f"arXiv / {cat}: {len(bucketed)}/{ARXIV_RESULTS_PER_CATEGORY} items available after backfill"
             )
         items.extend(bucketed)
+
+    with _arxiv_poll_lock:
+        _arxiv_last_poll_time = utc_now()
 
     return items
 
@@ -154,14 +240,14 @@ def fetch_hackernews():
     if not fresh_ids:
         return items
 
-    session = requests.Session()
     workers = max(1, min(HN_FETCH_WORKERS, len(fresh_ids)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(_fetch_hn_item, session, sid) for sid in fresh_ids]
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                items.append(result)
+    with requests.Session() as session:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_fetch_hn_item, session, sid) for sid in fresh_ids]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    items.append(result)
 
     set_hn_high_water_mark(max(fresh_ids))
     return items
@@ -178,299 +264,297 @@ def fetch_techmeme():
     )
 
 
-def fetch_standard_rss(
-    feed_url, source_label=None, source_type="rss", max_items=25
-):
-  """Fetch an RSS/Atom feed with browser headers, conditional GET,
-  cooldown tracking, and a Wayback Machine fallback.
-  """
-  if feed_should_skip_live(feed_url):
-    log.info(
-        f"RSS feed on cooldown, skipping attempt: {source_label or feed_url}"
-    )
-    return []
-
-  items = []
-  max_items = max_items or 25
-  feed = None
-  raw_content = None
-  live_status = None
-  not_modified = False
-
-  request_headers = dict(REQUEST_HEADERS)
-  cached_headers = FEED_CACHE_HEADERS.get(feed_url) or {}
-  if cached_headers.get("etag"):
-    request_headers["If-None-Match"] = cached_headers["etag"]
-  if cached_headers.get("last_modified"):
-    request_headers["If-Modified-Since"] = cached_headers["last_modified"]
-
-  try:
-    response = requests.get(feed_url, headers=request_headers, timeout=35)
-    live_status = response.status_code
-    if response.status_code == 304:
-      not_modified = True
-    elif response.status_code == 200:
-      raw_content = response.content
-      if response.headers.get("ETag") or response.headers.get("Last-Modified"):
-        FEED_CACHE_HEADERS[feed_url] = {
-            "etag": response.headers.get("ETag", cached_headers.get("etag")),
-            "last_modified": response.headers.get(
-                "Last-Modified", cached_headers.get("last_modified")
-            ),
-        }
-    else:
-      log.info(
-          f"RSS live fetch failed for {source_label or feed_url}:"
-          f" {response.status_code}"
-      )
-  except requests.exceptions.Timeout:
-    log.info(f"RSS timeout for {source_label or feed_url}.")
-  except Exception as exc:
-    log.info(f"RSS requests issue for {source_label or feed_url}: {repr(exc)}")
-
-  if not_modified:
-    feed_record_result(feed_url, success=True)
-    return items
-
-  if raw_content:
+def _is_wayback_snapshot_fresh(timestamp_str):
+    if not timestamp_str or len(timestamp_str) < 8:
+        return True
     try:
-      feed = feedparser.parse(raw_content)
-    except Exception as exc:
-      log.info(f"RSS feedparser parsing issue for {feed_url}: {repr(exc)}")
-      feed = None
+        snap_dt = dt.datetime.strptime(timestamp_str[:8], "%Y%m%d").replace(tzinfo=dt.timezone.utc)
+        return (utc_now() - snap_dt).days <= WAYBACK_MAX_AGE_DAYS
+    except Exception:
+        return True
 
-  live_entries_ok = bool(feed and getattr(feed, "entries", None))
-  feed_record_result(feed_url, success=live_entries_ok)
 
-  if not live_entries_ok:
-    reason = (
-        "blocked/challenge page or malformed feed"
-        if raw_content is not None
-        else f"status {live_status or 'request failed'}"
-    )
-    log.info(
-        f"RSS live path yielded no entries for {source_label or feed_url}"
-        f" ({reason}). Trying Wayback Machine..."
-    )
+def _fetch_wayback_snapshot(target_url, headers, label, timeout=25):
+    """Fetch the closest fresh Wayback Machine raw (id_) snapshot for target_url.
+    Returns (content_bytes_or_none, status) where status is 'ok', 'unchanged', or 'miss'.
+    """
     try:
-      wb_api_url = f"https://archive.org/wayback/available?url={feed_url}"
-      wb_resp = requests.get(wb_api_url, timeout=15)
-      if wb_resp.status_code == 200:
-        snapshots = wb_resp.json().get("archived_snapshots", {})
-        if "closest" in snapshots and snapshots["closest"].get("available"):
-          snapshot_url = re.sub(
-              r"/web/(\d+)/",
-              r"/web/\1id_/",
-              snapshots["closest"]["url"].replace("http://", "https://"),
-          )
-          log.info(
-              f"Wayback snapshot found for {source_label or feed_url}."
-              " Fetching..."
-          )
-          snap_resp = requests.get(
-              snapshot_url, headers=REQUEST_HEADERS, timeout=30
-          )
-          if snap_resp.status_code == 200:
-            wb_feed = feedparser.parse(snap_resp.content)
-            if getattr(wb_feed, "entries", None):
-              feed = wb_feed
+        wb_api_url = f"https://archive.org/wayback/available?url={target_url}"
+        wb_resp = requests.get(wb_api_url, timeout=15)
+        if wb_resp.status_code != 200:
+            return None, "miss"
+        snapshots = (wb_resp.json() or {}).get("archived_snapshots") or {}
+        closest = snapshots.get("closest") or {}
+        if not closest.get("available") or not closest.get("url"):
+            return None, "miss"
+
+        ts_str = str(closest.get("timestamp") or "")
+        if not _is_wayback_snapshot_fresh(ts_str):
+            log.debug(
+                f"Wayback snapshot for {label or target_url} is older than "
+                f"{WAYBACK_MAX_AGE_DAYS}d (ts={ts_str}); ignoring stale archive."
+            )
+            return None, "miss"
+
+        with _feed_state_lock:
+            last_ts = _WAYBACK_LAST_TS.get(target_url)
+        if ts_str and last_ts == ts_str:
+            log.debug(f"Wayback snapshot unchanged for {label or target_url} (ts={ts_str}); skipping.")
+            return None, "unchanged"
+
+        snapshot_url = re.sub(
+            r"/web/(\d+)/",
+            r"/web/\1id_/",
+            closest["url"].replace("http://", "https://"),
+        )
+        log.info(f"Wayback snapshot found for {label or target_url} (ts={ts_str or 'unknown'}). Fetching...")
+        snap_resp = requests.get(snapshot_url, headers=headers, timeout=timeout)
+        if snap_resp.status_code == 200 and snap_resp.content:
+            if ts_str:
+                with _feed_state_lock:
+                    _WAYBACK_LAST_TS[target_url] = ts_str
+            return snap_resp.content, "ok"
     except Exception as wb_exc:
-      log.info(
-          f"Wayback Machine RSS fallback failed for {feed_url}: {repr(wb_exc)}"
-      )
+        log.info(f"Wayback Machine fallback failed for {label or target_url}: {repr(wb_exc)}")
+    return None, "miss"
 
-  if not feed or not getattr(feed, "entries", None):
+
+def _build_rss_header_profiles(feed_url, cached_headers):
+    parsed = urlsplit(feed_url)
+    referer = f"{parsed.scheme}://{parsed.netloc}/" if parsed.scheme and parsed.netloc else ""
+    cond = {}
+    if cached_headers.get("etag"):
+        cond["If-None-Match"] = cached_headers["etag"]
+    if cached_headers.get("last_modified"):
+        cond["If-Modified-Since"] = cached_headers["last_modified"]
+
+    profile_default = {**REQUEST_HEADERS, **cond}
+    profile_browser = {
+        **HTML_BROWSER_HEADERS,
+        "Accept": REQUEST_HEADERS["Accept"],
+        **({"Referer": referer} if referer else {}),
+        **cond,
+    }
+    profile_rss_bot = {**RSS_BOT_HEADERS, **cond}
+    return [profile_default, profile_browser, profile_rss_bot]
+
+
+def _normalize_rss_entries(feed, feed_url, source_label, source_type, max_items, enriched=False):
+    items = []
+    source_name = source_label or (
+        clean_text(feed.feed.get("title", feed_url))
+        if getattr(feed, "feed", None)
+        else feed_url
+    )
+
+    entries = getattr(feed, "entries", [])[:max_items]
+    if not enriched:
+        for entry in entries:
+            title = clean_text(entry.get("title", ""))
+            link = normalize_url(entry.get("link", ""))
+            summary = clean_text(entry.get("summary", entry.get("description", "")))
+            if not title or not link:
+                continue
+            items.append({
+                "title": title,
+                "url": link,
+                "source": f"RSS / {source_name}",
+                "source_type": source_type,
+                "published_at": entry.get("published", entry.get("updated", utc_now().isoformat())),
+                "raw_summary": summary[:2200],
+            })
+        return items
+
+    with requests.Session() as session:
+        for entry in entries:
+            title = clean_text(entry.get("title", ""))
+            link = normalize_url(entry.get("link", ""))
+            if not title or not link:
+                continue
+
+            body = ""
+            if "content" in entry and entry.content and isinstance(entry.content, list):
+                body = clean_text(re.sub(r"<[^>]+>", " ", entry.content[0].get("value", "")))
+            if not body:
+                body = clean_text(
+                    re.sub(r"<[^>]+>", " ", entry.get("summary", entry.get("description", "")))
+                )
+
+            tags = []
+            if "tags" in entry and entry.tags:
+                for t in entry.tags:
+                    term = clean_text(t.get("term", ""))
+                    if term and term not in tags:
+                        tags.append(term)
+
+            author = clean_text(entry.get("author", entry.get("dc_creator", "")))
+
+            if len(body) < 120 and link and "news.google.com" not in link:
+                meta_snippet = fetch_webpage_summary_snippet(session, link, timeout=6)
+                if meta_snippet and len(meta_snippet) > len(body):
+                    body = f"{body} (Lead: {meta_snippet})" if body else meta_snippet
+
+            substance = []
+            if tags:
+                substance.append(f"Tags: {', '.join(tags[:6])}")
+            if author:
+                substance.append(f"Author: {author}")
+            if body:
+                substance.append(f"Summary: {body[:2200]}")
+
+            items.append({
+                "title": title,
+                "url": link,
+                "source": f"RSS / {source_name}",
+                "source_type": source_type,
+                "published_at": entry.get("published", entry.get("updated", utc_now().isoformat())),
+                "raw_summary": " | ".join(substance) if substance else title,
+            })
+
     return items
 
-  source_name = source_label or (
-      clean_text(feed.feed.get("title", feed_url))
-      if getattr(feed, "feed", None)
-      else feed_url
-  )
-  for entry in getattr(feed, "entries", [])[:max_items]:
-    title = clean_text(entry.get("title", ""))
-    link = normalize_url(entry.get("link", ""))
-    summary = clean_text(entry.get("summary", entry.get("description", "")))
 
-    if not title or not link:
-      continue
-
-    items.append({
-        "title": title,
-        "url": link,
-        "source": f"RSS / {source_name}",
-        "source_type": source_type,
-        "published_at": entry.get(
-            "published", entry.get("updated", utc_now().isoformat())
-        ),
-        "raw_summary": summary[:2200],
-    })
-
-  return items
-
-def fetch_standard_rss_2(
-    feed_url, source_label=None, source_type="custom_rss", max_items=None
+def _fetch_rss_feed_with_status(
+    feed_url,
+    source_label=None,
+    source_type="rss",
+    max_items=25,
+    enriched=False,
+    allow_wayback=True,
 ):
-  """Enriched RSS/Atom fetcher: extracts <content:encoded>, tags/categories,
-  author, and handles stubs.
-  """
-  if feed_should_skip_live(feed_url):
-    log.info(
-        f"RSS feed on cooldown, skipping attempt: {source_label or feed_url}"
-    )
-    return []
+    """Fetch an RSS/Atom feed with conditional GET, 403 header recovery,
+    404/410 fast-cooldown, and optional fresh Wayback fallback.
 
-  items = []
-  max_items = max_items or 25
-  feed = None
-  raw_content = None
-  live_status = None
-  not_modified = False
+    Returns (items, status, http_code) where status is one of:
+    'ok', 'not_modified', 'cooldown', 'permanent_error', 'failed'.
+    """
+    label = source_label or feed_url
+    max_items = max_items or 25
 
-  request_headers = dict(REQUEST_HEADERS)
-  cached_headers = FEED_CACHE_HEADERS.get(feed_url) or {}
-  if cached_headers.get("etag"):
-    request_headers["If-None-Match"] = cached_headers["etag"]
-  if cached_headers.get("last_modified"):
-    request_headers["If-Modified-Since"] = cached_headers["last_modified"]
+    if feed_should_skip_live(feed_url):
+        log.debug(f"RSS feed on cooldown, skipping attempt: {label} ({feed_url})")
+        return [], "cooldown", None
 
-  try:
-    response = requests.get(feed_url, headers=request_headers, timeout=35)
-    live_status = response.status_code
-    if response.status_code == 304:
-      not_modified = True
-    elif response.status_code == 200:
-      raw_content = response.content
-      if response.headers.get("ETag") or response.headers.get("Last-Modified"):
-        FEED_CACHE_HEADERS[feed_url] = {
-            "etag": response.headers.get("ETag", cached_headers.get("etag")),
-            "last_modified": response.headers.get(
-                "Last-Modified", cached_headers.get("last_modified")
-            ),
-        }
-    else:
-      log.info(
-          f"RSS live fetch failed for {source_label or feed_url}:"
-          f" {response.status_code}"
-      )
-  except requests.exceptions.Timeout:
-    log.info(f"RSS timeout for {source_label or feed_url}.")
-  except Exception as exc:
-    log.info(f"RSS requests issue for {source_label or feed_url}: {repr(exc)}")
+    cached_headers = feed_get_cache_headers(feed_url)
+    header_profiles = _build_rss_header_profiles(feed_url, cached_headers)
 
-  if not_modified:
-    feed_record_result(feed_url, success=True)
-    return items
+    feed = None
+    raw_content = None
+    live_status = None
 
-  if raw_content:
-    try:
-      feed = feedparser.parse(raw_content)
-    except Exception as exc:
-      log.info(f"RSS feedparser parsing issue for {feed_url}: {repr(exc)}")
-      feed = None
+    for idx, req_headers in enumerate(header_profiles):
+        try:
+            response = requests.get(feed_url, headers=req_headers, timeout=30)
+            live_status = response.status_code
 
-  live_entries_ok = bool(feed and getattr(feed, "entries", None))
-  feed_record_result(feed_url, success=live_entries_ok)
+            if live_status == 304:
+                feed_record_result(feed_url, success=True)
+                return [], "not_modified", 304
 
-  if not live_entries_ok:
-    reason = (
-        "blocked/challenge page or malformed feed"
-        if raw_content is not None
-        else f"status {live_status or 'request failed'}"
-    )
-    log.info(
-        f"RSS live path yielded no entries for {source_label or feed_url}"
-        f" ({reason}). Trying Wayback Machine..."
-    )
-    try:
-      wb_api_url = f"https://archive.org/wayback/available?url={feed_url}"
-      wb_resp = requests.get(wb_api_url, timeout=15)
-      if wb_resp.status_code == 200:
-        snapshots = wb_resp.json().get("archived_snapshots", {})
-        if "closest" in snapshots and snapshots["closest"].get("available"):
-          snapshot_url = re.sub(
-              r"/web/(\d+)/",
-              r"/web/\1id_/",
-              snapshots["closest"]["url"].replace("http://", "https://"),
-          )
-          log.info(
-              f"Wayback snapshot found for {source_label or feed_url}."
-              " Fetching..."
-          )
-          snap_resp = requests.get(
-              snapshot_url, headers=REQUEST_HEADERS, timeout=30
-          )
-          if snap_resp.status_code == 200:
-            wb_feed = feedparser.parse(snap_resp.content)
+            if live_status == 200:
+                raw_content = response.content
+                parsed_candidate = None
+                try:
+                    parsed_candidate = feedparser.parse(raw_content)
+                except Exception as exc:
+                    log.info(f"RSS feedparser parsing issue for {label}: {repr(exc)}")
+
+                if parsed_candidate and getattr(parsed_candidate, "entries", None):
+                    feed_set_cache_headers(
+                        feed_url,
+                        etag=response.headers.get("ETag"),
+                        last_modified=response.headers.get("Last-Modified"),
+                    )
+                    feed = parsed_candidate
+                    break
+
+                # Some WAFs return HTTP 200 with an HTML challenge page when headers
+                # look mismatched; retry with alternate header profiles if HTML detected.
+                snippet = (raw_content or b"")[:400].lower()
+                if idx < len(header_profiles) - 1 and (b"<html" in snippet or b"<!doctype html" in snippet):
+                    continue
+                break
+
+            if live_status in (404, 410):
+                entered_cd = feed_record_result(feed_url, success=False, permanent=True)
+                suffix = f" (entering {FEED_COOLDOWN_MINUTES}m cooldown)" if entered_cd else ""
+                log.info(f"RSS live fetch failed for {label}: {live_status}{suffix}")
+                return [], "permanent_error", live_status
+
+            if live_status in (403, 406) and idx < len(header_profiles) - 1:
+                continue
+
+            log.info(f"RSS live fetch failed for {label}: {live_status}")
+            break
+        except requests.exceptions.Timeout:
+            log.info(f"RSS timeout for {label}.")
+            break
+        except Exception as exc:
+            log.info(f"RSS requests issue for {label}: {repr(exc)}")
+            break
+
+    live_entries_ok = bool(feed and getattr(feed, "entries", None))
+    if live_entries_ok:
+        feed_record_result(feed_url, success=True)
+        items = _normalize_rss_entries(feed, feed_url, source_label, source_type, max_items, enriched=enriched)
+        return items, "ok", live_status
+
+    entered_cd = feed_record_result(feed_url, success=False)
+    if entered_cd:
+        log.info(
+            f"RSS feed entering {FEED_COOLDOWN_MINUTES}m cooldown after repeated failures: "
+            f"{label} (last status: {live_status or 'error'})"
+        )
+
+    if allow_wayback and live_status not in (404, 410):
+        reason = (
+            "blocked/challenge page or malformed feed"
+            if raw_content is not None
+            else f"status {live_status or 'request failed'}"
+        )
+        log.info(f"RSS live path yielded no entries for {label} ({reason}). Trying Wayback Machine...")
+        wb_content, wb_status = _fetch_wayback_snapshot(feed_url, REQUEST_HEADERS, label, timeout=30)
+        if wb_status == "unchanged":
+            return [], "not_modified", live_status
+        if wb_status == "ok" and wb_content:
+            wb_feed = feedparser.parse(wb_content)
             if getattr(wb_feed, "entries", None):
-              feed = wb_feed
-    except Exception as wb_exc:
-      log.info(
-          f"Wayback Machine RSS fallback failed for {feed_url}: {repr(wb_exc)}"
-      )
+                items = _normalize_rss_entries(
+                    wb_feed, feed_url, source_label, source_type, max_items, enriched=enriched
+                )
+                return items, "ok", live_status
 
-  if not feed or not getattr(feed, "entries", None):
+    return [], "failed", live_status
+
+
+def fetch_standard_rss(feed_url, source_label=None, source_type="rss", max_items=25):
+    """Fetch an RSS/Atom feed with browser/bot header fallback, conditional GET,
+    cooldown tracking, and a freshness-checked Wayback Machine fallback.
+    """
+    items, _, _ = _fetch_rss_feed_with_status(
+        feed_url,
+        source_label=source_label,
+        source_type=source_type,
+        max_items=max_items,
+        enriched=False,
+        allow_wayback=True,
+    )
     return items
 
-  source_name = source_label or (
-      clean_text(feed.feed.get("title", feed_url))
-      if getattr(feed, "feed", None)
-      else feed_url
-  )
-  session = requests.Session()
 
-  for entry in getattr(feed, "entries", [])[:max_items]:
-    title = clean_text(entry.get("title", ""))
-    link = normalize_url(entry.get("link", ""))
-    if not title or not link:
-      continue
-
-    body = ""
-    if "content" in entry and entry.content and isinstance(entry.content, list):
-      body = clean_text(
-          re.sub(r"<[^>]+>", " ", entry.content[0].get("value", ""))
-      )
-    if not body:
-      body = clean_text(
-          re.sub(
-              r"<[^>]+>", " ", entry.get("summary", entry.get("description", ""))
-          )
-      )
-
-    tags = []
-    if "tags" in entry and entry.tags:
-      for t in entry.tags:
-        term = clean_text(t.get("term", ""))
-        if term and term not in tags:
-          tags.append(term)
-
-    author = clean_text(entry.get("author", entry.get("dc_creator", "")))
-
-    if len(body) < 120 and link:
-      meta_snippet = fetch_webpage_summary_snippet(session, link, timeout=6)
-      if meta_snippet and len(meta_snippet) > len(body):
-        body = f"{body} (Lead: {meta_snippet})"
-
-    substance = []
-    if tags:
-      substance.append(f"Tags: {', '.join(tags[:6])}")
-    if author:
-      substance.append(f"Author: {author}")
-    if body:
-      substance.append(f"Summary: {body[:2200]}")
-
-    items.append({
-        "title": title,
-        "url": link,
-        "source": f"RSS / {source_name}",
-        "source_type": source_type,
-        "published_at": entry.get(
-            "published", entry.get("updated", utc_now().isoformat())
-        ),
-        "raw_summary": " | ".join(substance) if substance else title,
-    })
-
-  return items
+def fetch_standard_rss_2(feed_url, source_label=None, source_type="custom_rss", max_items=None):
+    """Enriched RSS/Atom fetcher: extracts <content:encoded>, tags/categories,
+    author, and handles short stubs.
+    """
+    items, _, _ = _fetch_rss_feed_with_status(
+        feed_url,
+        source_label=source_label,
+        source_type=source_type,
+        max_items=max_items or 25,
+        enriched=True,
+        allow_wayback=True,
+    )
+    return items
 
 
 # =========================
@@ -483,70 +567,134 @@ def split_fallback_urls(url_value):
     return [part.strip() for part in raw.split(";;") if part.strip()]
 
 
-def fetch_feed_specs(specs, source_type, max_items_per_feed):
-  items = []
-  for label, feed_url in specs:
-    total_for_label = 0
-    candidate_urls = split_fallback_urls(feed_url)
+def expand_candidate_urls(url_value):
+    """Split ';;' fallback URLs and automatically append verified alternate
+    endpoints for known deprecated or 403/404-prone feed URLs.
+    """
+    urls = split_fallback_urls(url_value)
+    expanded = []
+    seen = set()
+    for url in urls:
+        if url not in seen:
+            expanded.append(url)
+            seen.add(url)
+        lookup_key = url.rstrip("/")
+        for fallback in DEPRECATED_FEED_URL_FALLBACKS.get(url) or DEPRECATED_FEED_URL_FALLBACKS.get(lookup_key) or []:
+            if fallback not in seen:
+                expanded.append(fallback)
+                seen.add(fallback)
+    return expanded
 
+
+def _derive_html_fallback_url(feed_url):
+    """Convert an RSS feed URL into a safe website homepage URL for HTML fallback.
+    Strips feed/API subdomains (e.g. feeds.arstechnica.com -> arstechnica.com)
+    and skips non-publisher aggregator hosts like news.google.com.
+    """
+    parsed = urlsplit(feed_url or "")
+    if not parsed.scheme or not parsed.netloc:
+        return ""
+    host = parsed.netloc.lower()
+    if any(blocked in host for blocked in _NON_HTML_FALLBACK_HOSTS):
+        return ""
+    for prefix in ("feeds.", "feed.", "rss.", "api."):
+        if host.startswith(prefix) and len(host) > len(prefix) + 3:
+            host = host[len(prefix):]
+            break
+    return f"{parsed.scheme}://{host}/"
+
+
+def _fetch_single_feed_spec(label, feed_url, source_type, max_items_per_feed, enriched=False):
+    candidate_urls = expand_candidate_urls(feed_url)
+    if not candidate_urls:
+        return []
+
+    wayback_candidates = []
+
+    # Pass 1: Try all live RSS candidate URLs before touching Wayback or HTML scraping.
     for candidate_url in candidate_urls:
-      try:
-        fetched = fetch_standard_rss(
-            candidate_url,
-            source_label=label,
-            source_type=source_type,
-            max_items=max_items_per_feed,
-        )
-        log.info(f"{source_type} feed: {len(fetched)} items from {label}")
-        items.extend(fetched)
-        total_for_label += len(fetched)
-        if fetched:
-          break
-      except Exception as exc:
-        log.error(
-            f"{source_type} issue for {label} / {candidate_url}: {repr(exc)}"
-        )
-    if total_for_label == 0 and candidate_urls:
-      parsed_root = urlsplit(candidate_urls[0])
-      if parsed_root.scheme and parsed_root.netloc and "news.google.com" not in parsed_root.netloc:
-        root_url = f"{parsed_root.scheme}://{parsed_root.netloc}/"
-        log.info(f"{source_type}: RSS yielded 0 items for {label}; falling back to HTML scraper on {root_url}")
-        scraped_fallback = scrape_single_html_target(label, root_url, max_items_per_feed)
-        items.extend(scraped_fallback)
-  return items
+        try:
+            fetched, status, http_code = _fetch_rss_feed_with_status(
+                candidate_url,
+                source_label=label,
+                source_type=source_type,
+                max_items=max_items_per_feed,
+                enriched=enriched,
+                allow_wayback=False,
+            )
+            if status == "ok":
+                log.info(f"{source_type} feed: {len(fetched)} items from {label}")
+                return fetched
+            if status == "not_modified":
+                log.debug(f"{source_type} feed: 304 Not Modified for {label}")
+                return []
+            if status == "failed" and http_code not in (404, 410) and "news.google.com" not in candidate_url:
+                wayback_candidates.append(candidate_url)
+        except Exception as exc:
+            log.error(f"{source_type} issue for {label} / {candidate_url}: {repr(exc)}")
+
+    # Pass 2: Try a fresh Wayback RSS snapshot only for non-404 URLs if every live URL failed.
+    for candidate_url in wayback_candidates:
+        wb_content, wb_status = _fetch_wayback_snapshot(candidate_url, REQUEST_HEADERS, label, timeout=30)
+        if wb_status == "unchanged":
+            return []
+        if wb_status == "ok" and wb_content:
+            wb_feed = feedparser.parse(wb_content)
+            if getattr(wb_feed, "entries", None):
+                items = _normalize_rss_entries(
+                    wb_feed, candidate_url, label, source_type, max_items_per_feed, enriched=enriched
+                )
+                log.info(f"{source_type} feed: {len(items)} items from {label} (Wayback RSS)")
+                return items
+
+    # Pass 3: Fall back to HTML scraper only when all RSS paths genuinely failed (never on 304).
+    root_url = _derive_html_fallback_url(candidate_urls[0])
+    if root_url:
+        log.info(f"{source_type}: RSS failed for {label}; falling back to HTML scraper on {root_url}")
+        return scrape_single_html_target(label, root_url, max_items_per_feed)
+
+    return []
+
+
+def _fetch_feed_specs_concurrent(specs, source_type, max_items_per_feed, enriched=False):
+    if not specs:
+        return []
+
+    workers = max(1, min(RSS_FETCH_WORKERS, len(specs)))
+    if workers == 1:
+        items = []
+        for label, feed_url in specs:
+            items.extend(_fetch_single_feed_spec(label, feed_url, source_type, max_items_per_feed, enriched=enriched))
+        return items
+
+    results_by_idx = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_idx = {
+            pool.submit(_fetch_single_feed_spec, label, feed_url, source_type, max_items_per_feed, enriched): idx
+            for idx, (label, feed_url) in enumerate(specs)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                results_by_idx[idx] = future.result() or []
+            except Exception as exc:
+                label = specs[idx][0]
+                log.error(f"{source_type} worker error for {label}: {repr(exc)}")
+                results_by_idx[idx] = []
+
+    items = []
+    for idx in range(len(specs)):
+        items.extend(results_by_idx.get(idx, []))
+    return items
+
+
+def fetch_feed_specs(specs, source_type, max_items_per_feed):
+    return _fetch_feed_specs_concurrent(specs, source_type, max_items_per_feed, enriched=False)
 
 
 def fetch_feed_specs_2(specs, source_type, max_items_per_feed):
-  items = []
-  for label, feed_url in specs:
-    total_for_label = 0
-    candidate_urls = split_fallback_urls(feed_url)
+    return _fetch_feed_specs_concurrent(specs, source_type, max_items_per_feed, enriched=True)
 
-    for candidate_url in candidate_urls:
-      try:
-        fetched = fetch_standard_rss_2(
-            candidate_url,
-            source_label=label,
-            source_type=source_type,
-            max_items=max_items_per_feed,
-        )
-        log.info(f"{source_type} feed: {len(fetched)} items from {label}")
-        items.extend(fetched)
-        total_for_label += len(fetched)
-        if fetched:
-          break
-      except Exception as exc:
-        log.error(
-            f"{source_type} issue for {label} / {candidate_url}: {repr(exc)}"
-        )
-    if total_for_label == 0 and candidate_urls:
-      parsed_root = urlsplit(candidate_urls[0])
-      if parsed_root.scheme and parsed_root.netloc and "news.google.com" not in parsed_root.netloc:
-        root_url = f"{parsed_root.scheme}://{parsed_root.netloc}/"
-        log.info(f"{source_type}: RSS yielded 0 items for {label}; falling back to HTML scraper on {root_url}")
-        scraped_fallback = scrape_single_html_target(label, root_url, max_items_per_feed)
-        items.extend(scraped_fallback)
-  return items
 
 def fetch_webpage_summary_snippet(session, url, timeout=6):
     """Fallback scraper to grab OpenGraph or meta description for short stubs."""
@@ -595,6 +743,7 @@ def fetch_supply_chain_rss():
         return []
     specs = get_feed_specs("SUPPLY_CHAIN_RSS_FEEDS", DEFAULT_SUPPLY_CHAIN_RSS_FEEDS)
     return fetch_feed_specs(specs, "supply_chain_media", SUPPLY_CHAIN_RSS_MAX_ITEMS_PER_FEED)
+
 
 def _unwrap_wayback_url(url_str):
     """Strip Wayback Machine /web/<timestamp>/ prefix if present so canonical domain links are preserved."""
@@ -742,17 +891,41 @@ def _parse_html_articles(html_text, base_url, label, url_pattern, ignore_pattern
 
 
 def _scrape_wp_json_fallback(base_url, label, max_items):
-    """Fallback for WordPress sites when HTML/RSS paths return 403."""
+    """Fallback for WordPress sites when HTML/RSS paths fail.
+    Returns (items, status) where status is 'ok', 'not_modified', or 'miss'.
+    """
     parsed = urlsplit(base_url)
     wp_api_url = f"{parsed.scheme}://{parsed.netloc}/wp-json/wp/v2/posts?per_page={max_items}&_fields=link,title,excerpt,date_gmt"
-    headers = {**HTML_BROWSER_HEADERS, "Accept": "application/json,text/plain,*/*", "Referer": f"{parsed.scheme}://{parsed.netloc}/"}
+    if feed_should_skip_live(wp_api_url):
+        return [], "miss"
+
+    cached = feed_get_cache_headers(wp_api_url)
+    headers = {
+        **HTML_BROWSER_HEADERS,
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": f"{parsed.scheme}://{parsed.netloc}/",
+    }
+    if cached.get("etag"):
+        headers["If-None-Match"] = cached["etag"]
+    if cached.get("last_modified"):
+        headers["If-Modified-Since"] = cached["last_modified"]
+
     try:
         resp = requests.get(wp_api_url, headers=headers, timeout=15)
+        if resp.status_code == 304:
+            feed_record_result(wp_api_url, success=True)
+            return [], "not_modified"
+        if resp.status_code in (403, 404, 410):
+            feed_record_result(wp_api_url, success=False, permanent=(resp.status_code in (404, 410)))
+            return [], "miss"
         if resp.status_code != 200:
-            return []
+            feed_record_result(wp_api_url, success=False)
+            return [], "miss"
+
         posts = resp.json()
         if not isinstance(posts, list):
-            return []
+            feed_record_result(wp_api_url, success=False)
+            return [], "miss"
         items = []
         for post in posts[:max_items]:
             link = normalize_url(str(post.get("link") or ""))
@@ -776,84 +949,83 @@ def _scrape_wp_json_fallback(base_url, label, max_items):
                 "category": "Frontier Deep-Tech",
                 "raw_summary": summary[:2200],
             })
-        return items
+        if items:
+            feed_record_result(wp_api_url, success=True)
+            feed_set_cache_headers(
+                wp_api_url,
+                etag=resp.headers.get("ETag"),
+                last_modified=resp.headers.get("Last-Modified"),
+            )
+            return items, "ok"
+        return [], "miss"
     except Exception:
-        return []
+        feed_record_result(wp_api_url, success=False)
+        return [], "miss"
 
 
 def _scrape_wayback_html_fallback(base_url, label, url_pattern, ignore_patterns, max_items):
-    """Fallback that scrapes raw HTML from a recent Wayback Machine snapshot (id_ mode)."""
+    """Fallback that scrapes raw HTML from a recent Wayback Machine snapshot (id_ mode).
+    Returns (items, status) where status is 'ok', 'unchanged', or 'miss'.
+    """
+    content, status = _fetch_wayback_snapshot(base_url, HTML_BROWSER_HEADERS, label, timeout=25)
+    if status == "unchanged":
+        return [], "unchanged"
+    if status != "ok" or not content:
+        return [], "miss"
     try:
-        wb_api_url = f"https://archive.org/wayback/available?url={base_url}"
-        wb_resp = requests.get(wb_api_url, timeout=15)
-        if wb_resp.status_code != 200:
-            return []
-        snapshots = (wb_resp.json() or {}).get("archived_snapshots") or {}
-        closest = snapshots.get("closest") or {}
-        if not closest.get("available") or not closest.get("url"):
-            return []
-        ts_str = str(closest.get("timestamp") or "")
-        if len(ts_str) >= 8:
-            try:
-                snap_dt = dt.datetime.strptime(ts_str[:8], "%Y%m%d").replace(tzinfo=dt.timezone.utc)
-                if (utc_now() - snap_dt).days > 7:
-                    return []
-            except Exception:
-                pass
-        snapshot_url = re.sub(
-            r"/web/(\d+)/",
-            r"/web/\1id_/",
-            closest["url"].replace("http://", "https://"),
-        )
-        snap_resp = requests.get(snapshot_url, headers=HTML_BROWSER_HEADERS, timeout=25)
-        if snap_resp.status_code != 200:
-            return []
-        return _parse_html_articles(snap_resp.text, base_url, label, url_pattern, ignore_patterns, max_items)
+        html_text = content.decode("utf-8", errors="replace")
+        items = _parse_html_articles(html_text, base_url, label, url_pattern, ignore_patterns, max_items)
+        return (items, "ok") if items else ([], "miss")
     except Exception:
-        return []
+        return [], "miss"
 
 
 def _scrape_domain_index_fallback(base_url, label, max_items):
-    """Last-resort domain index scraper when Cloudflare blocks direct HTML, WP-JSON, and Wayback."""
+    """Last-resort domain index scraper via Google News RSS with conditional GET caching."""
     clean_domain = urlsplit(base_url).netloc.lower().lstrip("www.")
-    if not clean_domain:
+    if not clean_domain or any(blocked in clean_domain for blocked in _NON_HTML_FALLBACK_HOSTS):
         return []
     query_url = f"https://news.google.com/rss/search?q=site:{clean_domain}+when:7d&hl=en-US&gl=US&ceid=US:en"
-    try:
-        resp = requests.get(query_url, headers=REQUEST_HEADERS, timeout=20)
-        if resp.status_code != 200:
-            return []
-        feed = feedparser.parse(resp.content)
-        items = []
-        for entry in getattr(feed, "entries", [])[:max_items]:
-            title = clean_text(entry.get("title", ""))
-            if " - " in title:
-                title_parts = title.rsplit(" - ", 1)
-                if len(title_parts[0]) >= 15:
-                    title = title_parts[0].strip()
-            link = normalize_url(entry.get("link", ""))
-            summary = clean_text(re.sub(r"<[^>]+>", " ", entry.get("summary", entry.get("description", ""))))
-            if not title or not link:
-                continue
-            items.append({
-                "title": title,
-                "url": link,
-                "source": f"Web / {label}",
-                "source_type": "scraped_web",
-                "published_at": entry.get("published", entry.get("updated", utc_now().isoformat())),
-                "category": "Frontier Deep-Tech",
-                "raw_summary": summary[:2200] if summary else title,
-            })
-        return items
-    except Exception:
+    raw_items, status, _ = _fetch_rss_feed_with_status(
+        query_url,
+        source_label=label,
+        source_type="scraped_web",
+        max_items=max_items,
+        enriched=False,
+        allow_wayback=False,
+    )
+    if status != "ok" or not raw_items:
         return []
+
+    items = []
+    for item in raw_items:
+        title = item["title"]
+        if " - " in title:
+            title_parts = title.rsplit(" - ", 1)
+            if len(title_parts[0]) >= 15:
+                title = title_parts[0].strip()
+        summary = clean_text(re.sub(r"<[^>]+>", " ", item.get("raw_summary", "")))
+        items.append({
+            "title": title,
+            "url": item["url"],
+            "source": f"Web / {label}",
+            "source_type": "scraped_web",
+            "published_at": item.get("published_at", utc_now().isoformat()),
+            "category": "Frontier Deep-Tech",
+            "raw_summary": summary[:2200] if summary else title,
+        })
+    return items
 
 
 def scrape_single_html_target(label, target, max_items=None):
-    """Scrape a single HTML target spec ('URL;;regex' or 'URL') with 4-stage 403 resilience."""
+    """Scrape a single HTML target spec ('URL;;regex' or 'URL') with 4-stage 403 resilience,
+    conditional GET (304) awareness, and per-stage failure cooldowns.
+    """
     max_items = max_items or HTML_SCRAPER_MAX_ITEMS_PER_SITE
     ignore_patterns = re.compile(
-        r"/(about|contact|privacy|terms|login|signup|register|tag|category|author|cart|search|feed)/?",
+        r"/(about|contact|privacy|terms|login|signup|register|tag|category|author|cart|search|feed|"
+        r"segment|section|events|subscribe|podcasts?|videos?|newsletters?|advertise|sponsors?|"
+        r"careers?|staff|team|policies|cookie)/?",
         re.IGNORECASE,
     )
     if ";;" in target:
@@ -863,37 +1035,74 @@ def scrape_single_html_target(label, target, max_items=None):
         base_url, url_pattern = target.strip(), None
 
     parsed_base = urlsplit(base_url)
-    headers = {
-        **HTML_BROWSER_HEADERS,
-        "Referer": f"{parsed_base.scheme}://{parsed_base.netloc}/",
-    }
-
     site_items = []
-    try:
-        resp = requests.get(base_url, headers=headers, timeout=20)
-        if resp.status_code == 200:
-            site_items = _parse_html_articles(
-                resp.text, base_url, label, url_pattern, ignore_patterns, max_items
-            )
-        else:
-            log.info(
-                f"html_scraper: direct fetch for '{label}' returned HTTP {resp.status_code}; trying fallbacks..."
-            )
-    except Exception as exc:
-        log.info(f"html_scraper: direct fetch exception for '{label}': {repr(exc)}; trying fallbacks...")
 
+    # Stage 1: Direct HTML fetch with conditional GET and failure cooldown
+    if not feed_should_skip_live(base_url):
+        cached = feed_get_cache_headers(base_url)
+        headers = {
+            **HTML_BROWSER_HEADERS,
+            "Referer": f"{parsed_base.scheme}://{parsed_base.netloc}/",
+        }
+        if cached.get("etag"):
+            headers["If-None-Match"] = cached["etag"]
+        if cached.get("last_modified"):
+            headers["If-Modified-Since"] = cached["last_modified"]
+
+        try:
+            resp = requests.get(base_url, headers=headers, timeout=20)
+            if resp.status_code == 304:
+                feed_record_result(base_url, success=True)
+                log.debug(f"html_scraper: 304 Not Modified for '{label}'")
+                return []
+            if resp.status_code == 200:
+                site_items = _parse_html_articles(
+                    resp.text, base_url, label, url_pattern, ignore_patterns, max_items
+                )
+                if site_items:
+                    feed_record_result(base_url, success=True)
+                    feed_set_cache_headers(
+                        base_url,
+                        etag=resp.headers.get("ETag"),
+                        last_modified=resp.headers.get("Last-Modified"),
+                    )
+            else:
+                entered_cd = feed_record_result(
+                    base_url, success=False, permanent=(resp.status_code in (404, 410))
+                )
+                suffix = f" (entering {FEED_COOLDOWN_MINUTES}m cooldown)" if entered_cd else ""
+                log.info(
+                    f"html_scraper: direct fetch for '{label}' returned HTTP {resp.status_code}{suffix}; trying fallbacks..."
+                )
+        except Exception as exc:
+            feed_record_result(base_url, success=False)
+            log.info(f"html_scraper: direct fetch exception for '{label}': {repr(exc)}; trying fallbacks...")
+    else:
+        log.debug(f"html_scraper: direct fetch on cooldown for '{label}'; using fallbacks.")
+
+    # Stage 2: WordPress REST API fallback
     if not site_items:
-        site_items = _scrape_wp_json_fallback(base_url, label, max_items)
-        if site_items:
+        wp_items, wp_status = _scrape_wp_json_fallback(base_url, label, max_items)
+        if wp_status == "not_modified":
+            log.debug(f"html_scraper: WP REST API 304 Not Modified for '{label}'")
+            return []
+        if wp_items:
+            site_items = wp_items
             log.info(f"html_scraper: recovered {len(site_items)} items for '{label}' via WP REST API")
 
+    # Stage 3: Fresh Wayback Machine HTML snapshot fallback
     if not site_items:
-        site_items = _scrape_wayback_html_fallback(
+        wb_items, wb_status = _scrape_wayback_html_fallback(
             base_url, label, url_pattern, ignore_patterns, max_items
         )
-        if site_items:
+        if wb_status == "unchanged":
+            log.debug(f"html_scraper: Wayback snapshot unchanged for '{label}'")
+            return []
+        if wb_items:
+            site_items = wb_items
             log.info(f"html_scraper: recovered {len(site_items)} items for '{label}' via Wayback HTML snapshot")
 
+    # Stage 4: Google News domain index fallback (conditional GET cached)
     if not site_items:
         site_items = _scrape_domain_index_fallback(base_url, label, max_items)
         if site_items:
@@ -910,15 +1119,37 @@ def fetch_universal_html_scrapers():
         return []
 
     targets = get_feed_specs("HTML_SCRAPER_TARGETS", DEFAULT_HTML_SCRAPER_TARGETS)
+    if not targets:
+        return []
+
+    workers = max(1, min(RSS_FETCH_WORKERS, len(targets)))
+    if workers == 1:
+        all_scraped_items = []
+        for label, target in targets:
+            try:
+                all_scraped_items.extend(scrape_single_html_target(label, target, HTML_SCRAPER_MAX_ITEMS_PER_SITE))
+            except Exception as exc:
+                log.error(f"html_scraper error scraping '{label}': {repr(exc)}")
+        return all_scraped_items
+
+    results_by_idx = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_idx = {
+            pool.submit(scrape_single_html_target, label, target, HTML_SCRAPER_MAX_ITEMS_PER_SITE): idx
+            for idx, (label, target) in enumerate(targets)
+        }
+        for future in as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            try:
+                results_by_idx[idx] = future.result() or []
+            except Exception as exc:
+                label = targets[idx][0]
+                log.error(f"html_scraper error scraping '{label}': {repr(exc)}")
+                results_by_idx[idx] = []
+
     all_scraped_items = []
-
-    for label, target in targets:
-        try:
-            site_items = scrape_single_html_target(label, target, HTML_SCRAPER_MAX_ITEMS_PER_SITE)
-            all_scraped_items.extend(site_items)
-        except Exception as exc:
-            log.error(f"html_scraper error scraping '{label}': {repr(exc)}")
-
+    for idx in range(len(targets)):
+        all_scraped_items.extend(results_by_idx.get(idx, []))
     return all_scraped_items
 
 
