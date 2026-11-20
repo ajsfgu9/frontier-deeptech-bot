@@ -5,11 +5,49 @@ from fetchers import *
 _last_flush_time = utc_now()
 
 # =========================
-# Gemini / OpenRouter classification
+# LLM classification (OpenRouter + Official Gemini API)
 # =========================
 
+SUPPORTED_LLM_PROVIDERS = {"openrouter", "gemini"}
 
-def parse_llm_json(text):
+
+def _normalize_llm_provider(provider_name):
+    value = (provider_name or "").strip().lower()
+    if value in {"google", "gemini-official", "google-gemini"}:
+        return "gemini"
+    return value
+
+
+def _get_llm_provider_chain():
+    primary = _normalize_llm_provider(LLM_PROVIDER) or "openrouter"
+    if primary not in SUPPORTED_LLM_PROVIDERS:
+        log.warning(f"Unsupported LLM_PROVIDER={LLM_PROVIDER!r}; defaulting to 'openrouter'.")
+        primary = "openrouter"
+
+    chain = [primary]
+    fallback = _normalize_llm_provider(LLM_FALLBACK_PROVIDER)
+    if fallback:
+        if fallback not in SUPPORTED_LLM_PROVIDERS:
+            log.warning(f"Unsupported LLM_FALLBACK_PROVIDER={LLM_FALLBACK_PROVIDER!r}; ignoring fallback.")
+        elif fallback != primary:
+            chain.append(fallback)
+    return chain
+
+
+def _provider_display_name(provider):
+    if provider == "gemini":
+        return f"Gemini ({GEMINI_MODEL})"
+    return f"OpenRouter ({OPENROUTER_MODEL})"
+
+
+def _active_llm_label():
+    chain = _get_llm_provider_chain()
+    if len(chain) == 2:
+        return f"{_provider_display_name(chain[0])} -> fallback {_provider_display_name(chain[1])}"
+    return _provider_display_name(chain[0])
+
+
+def parse_llm_json(text, provider_name="LLM"):
     if not text:
         raise ValueError("Empty response text.")
 
@@ -27,19 +65,155 @@ def parse_llm_json(text):
             parsed = json.loads(text[start:end + 1])
 
     if not isinstance(parsed, dict):
-        raise ValueError("OpenRouter response was not a JSON object.")
+        raise ValueError(f"{provider_name} response was not a JSON object.")
     if "results" not in parsed or not isinstance(parsed["results"], list):
-        raise ValueError("OpenRouter response did not include a results list.")
+        raise ValueError(f"{provider_name} response did not include a results list.")
     return parsed
 
 
-def classify_batch(candidates):
+def _call_openrouter_api(system_prompt, user_prompt):
     if not OPENROUTER_API_KEY:
         log.error(
-            "Missing OPENROUTER_API_KEY. Classification skipped; batch will be requeued "
-            "(capped by MAX_ITEM_RETRIES, currently %s)." % MAX_ITEM_RETRIES
+            "Missing OPENROUTER_API_KEY. OpenRouter classification skipped."
         )
         return None
+
+    payload = {
+        "model": OPENROUTER_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt.strip()},
+            {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)},
+        ],
+        "temperature": 0.05,
+        "response_format": {"type": "json_object"},
+    }
+
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    url = "https://openrouter.ai/api/v1/chat/completions"
+
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=90,
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+                if DEBUG_LLM:
+                    log.debug(f"OpenRouter raw response:\n{text[:2500]}")
+
+                parsed = parse_llm_json(text, provider_name="OpenRouter")
+                return parsed.get("results", [])
+
+            if response.status_code in [429, 500, 502, 503, 504]:
+                wait_seconds = 10 * (attempt + 1)
+                log.warning(f"OpenRouter temporary error {response.status_code}. Retrying in {wait_seconds}s. {response.text[:500]}")
+                time.sleep(wait_seconds)
+                continue
+
+            log.error(f"OpenRouter error: {response.status_code} {response.text[:1000]}")
+            return None
+
+        except Exception as exc:
+            wait_seconds = 10 * (attempt + 1)
+            log.warning(f"OpenRouter exception: {repr(exc)}. Retrying in {wait_seconds}s.")
+            time.sleep(wait_seconds)
+
+    return None
+
+
+def _call_gemini_api(system_prompt, user_prompt):
+    if not GEMINI_API_KEY:
+        log.error(
+            "Missing GEMINI_API_KEY. Gemini API classification skipped."
+        )
+        return None
+
+    payload = {
+        "systemInstruction": {"parts": [{"text": system_prompt.strip()}]},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": json.dumps(user_prompt, ensure_ascii=False)}],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.05,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    headers = {
+        "x-goog-api-key": GEMINI_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=90,
+            )
+
+            if response.status_code == 200:
+                data = response.json()
+                candidates_resp = data.get("candidates") or []
+                parts = (
+                    (candidates_resp[0].get("content") or {}).get("parts") or []
+                    if candidates_resp
+                    else []
+                )
+                text_parts = [
+                    part.get("text", "")
+                    for part in parts
+                    if isinstance(part, dict) and part.get("text") and not part.get("thought")
+                ]
+                text = "".join(text_parts)
+                if not text and parts:
+                    text = "".join(
+                        part.get("text", "")
+                        for part in parts
+                        if isinstance(part, dict) and part.get("text")
+                    )
+
+                if DEBUG_LLM:
+                    log.debug(f"Gemini raw response:\n{text[:2500]}")
+
+                parsed = parse_llm_json(text, provider_name="Gemini")
+                return parsed.get("results", [])
+
+            if response.status_code in [429, 500, 502, 503, 504]:
+                wait_seconds = 10 * (attempt + 1)
+                log.warning(f"Gemini temporary error {response.status_code}. Retrying in {wait_seconds}s. {response.text[:500]}")
+                time.sleep(wait_seconds)
+                continue
+
+            log.error(f"Gemini error: {response.status_code} {response.text[:1000]}")
+            return None
+
+        except Exception as exc:
+            wait_seconds = 10 * (attempt + 1)
+            log.warning(f"Gemini exception: {repr(exc)}. Retrying in {wait_seconds}s.")
+            time.sleep(wait_seconds)
+
+    return None
+
+
+def classify_batch(candidates):
+    provider_chain = _get_llm_provider_chain()
 
     compact_items = []
     for index, item in enumerate(candidates):
@@ -108,56 +282,20 @@ Return only valid JSON using this schema:
         "items": compact_items,
     }
 
-    payload = {
-        "model": OPENROUTER_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt.strip()},
-            {"role": "user", "content": json.dumps(user_prompt, ensure_ascii=False)}
-        ],
-        "temperature": 0.05,
-        "response_format": {"type": "json_object"}
-    }
+    for idx, provider in enumerate(provider_chain):
+        if idx > 0:
+            log.warning(f"Primary LLM provider failed; falling back to {_provider_display_name(provider)}.")
+        if provider == "gemini":
+            results = _call_gemini_api(system_prompt, user_prompt)
+        else:
+            results = _call_openrouter_api(system_prompt, user_prompt)
+        if results is not None:
+            return results
 
-    headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-        "Content-Type": "application/json"
-    }
-
-    url = "https://openrouter.ai/api/v1/chat/completions"
-
-    for attempt in range(3):
-        try:
-            response = requests.post(
-                url,
-                headers=headers,
-                json=payload,
-                timeout=90,
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-                if DEBUG_LLM:
-                    log.debug(f"OpenRouter raw response:\n{text[:2500]}")
-
-                parsed = parse_llm_json(text)
-                return parsed.get("results", [])
-
-            if response.status_code in [429, 500, 502, 503, 504]:
-                wait_seconds = 10 * (attempt + 1)
-                log.warning(f"OpenRouter temporary error {response.status_code}. Retrying in {wait_seconds}s. {response.text[:500]}")
-                time.sleep(wait_seconds)
-                continue
-
-            log.error(f"OpenRouter error: {response.status_code} {response.text[:1000]}")
-            return None
-
-        except Exception as exc:
-            wait_seconds = 10 * (attempt + 1)
-            log.warning(f"OpenRouter exception: {repr(exc)}. Retrying in {wait_seconds}s.")
-            time.sleep(wait_seconds)
-
+    log.error(
+        "All configured LLM providers failed (%s). Batch will be requeued "
+        "(capped by MAX_ITEM_RETRIES, currently %s)." % (_active_llm_label(), MAX_ITEM_RETRIES)
+    )
     return None
 
 
@@ -169,9 +307,10 @@ def classify_and_insert(candidates):
 
     batches = list(chunk_list(candidates, LLM_BATCH_SIZE))
     total_batches = len(batches)
+    llm_label = _active_llm_label()
 
     for i, batch in enumerate(batches, 1):
-        log.info(f"Processing batch {i}/{total_batches} with OpenRouter ({len(batch)} items)...")
+        log.info(f"Processing batch {i}/{total_batches} with {llm_label} ({len(batch)} items)...")
         
         results = classify_batch(batch)
         if results is None:
@@ -293,14 +432,9 @@ def fetch_all_sources() -> list:
 def touch_healthcheck():
     try:
         directory = os.path.dirname(HEALTHCHECK_FILE)
-        target_file = HEALTHCHECK_FILE
         if directory:
             os.makedirs(directory, exist_ok=True)
-            if not os.access(directory, os.W_OK):
-                fallback_dir = "/tmp/frontier_deeptech_data"
-                os.makedirs(fallback_dir, exist_ok=True)
-                target_file = os.path.join(fallback_dir, os.path.basename(HEALTHCHECK_FILE))
-        with open(target_file, "w") as fh:
+        with open(HEALTHCHECK_FILE, "w") as fh:
             fh.write(utc_now().isoformat())
     except Exception as exc:
         log.warning(f"Could not write healthcheck file {HEALTHCHECK_FILE}: {repr(exc)}")
@@ -426,7 +560,8 @@ def flush_queue():
         remaining = len(CANDIDATE_QUEUE)
 
     ts = utc_now().strftime("%H:%M:%S")
-    log.info(f"[{ts}] Flushing {len(batch)} item(s) through OpenRouter. Remaining queued: {remaining}")
+    llm_label = _active_llm_label()
+    log.info(f"[{ts}] Flushing {len(batch)} item(s) through {llm_label}. Remaining queued: {remaining}")
 
     result = classify_and_insert(batch)
 
@@ -437,7 +572,7 @@ def flush_queue():
 
     inserted = result.get("inserted", 0)
     processed = result.get("processed", 0)
-    log.info(f"OpenRouter processed {processed} item(s); inserted {inserted} relevant item(s).")
+    log.info(f"{llm_label} processed {processed} item(s); inserted {inserted} relevant item(s).")
 
     _last_flush_time = utc_now()
     touch_healthcheck()
@@ -490,7 +625,9 @@ def log_flush_heartbeat():
 def print_config():
     log.info("Configuration:")
     log.info(f"DB_PATH: {DB_PATH}")
+    log.info(f"LLM_PROVIDER: {_get_llm_provider_chain()[0]} | LLM_FALLBACK_PROVIDER: {(_get_llm_provider_chain()[1] if len(_get_llm_provider_chain()) > 1 else 'none')}")
     log.info(f"OPENROUTER_MODEL: {OPENROUTER_MODEL}")
+    log.info(f"GEMINI_MODEL: {GEMINI_MODEL}")
     log.info(f"FETCH_MINUTES: {FETCH_MINUTES} (fetch and flush now run on independent timers)")
     log.info(f"MAX_CANDIDATES_PER_RUN: {MAX_CANDIDATES_PER_RUN}")
     log.info(f"MAX_CANDIDATES_PER_FLUSH: {MAX_CANDIDATES_PER_FLUSH}")
@@ -515,6 +652,7 @@ def print_config():
     log.info(f"Telegram token found: {bool(TELEGRAM_BOT_TOKEN)}")
     log.info(f"Telegram chat found: {bool(TELEGRAM_CHAT_ID)}")
     log.info(f"OpenRouter key found: {bool(OPENROUTER_API_KEY)}")
+    log.info(f"Gemini key found: {bool(GEMINI_API_KEY)}")
 
 
 def main():
