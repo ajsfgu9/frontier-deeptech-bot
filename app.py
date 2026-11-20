@@ -43,9 +43,6 @@ def classify_batch(candidates):
 
     compact_items = []
     for index, item in enumerate(candidates):
-        signals = match_hardware_signals(item)
-        matched_domains = ", ".join(s["domain"] for s in signals)
-        matched_subs = "; ".join(sub for s in signals for sub in s["subtopics"])
         compact_items.append(
             {
                 "index": index,
@@ -55,7 +52,6 @@ def classify_batch(candidates):
                 "summary": item.get("raw_summary", "")[:2200],
                 "url": item.get("url", "")[:400],
                 "published_at": item.get("published_at", "")[:80],
-                "detected_hardware_signals": f"{matched_domains} ({matched_subs})"[:350] if matched_subs else "",
             }
         )
 
@@ -208,14 +204,11 @@ def classify_and_insert(candidates):
                 continue
 
             cap = LLM_TEXT_FIELD_MAX_CHARS
-            enrich_item_with_hardware_signals(original)
-            resolved_domain = clean_text(result.get("hardware_domain", "")) or original.get("hardware_domain_hint", "")
-            resolved_bottleneck = clean_text(result.get("bottleneck_addressed", "")) or original.get("bottleneck_hint", "")
             item = {
                 **original,
                 "category": clean_text(result.get("category", ""))[:cap],
-                "hardware_domain": resolved_domain[:cap],
-                "bottleneck_addressed": resolved_bottleneck[:cap],
+                "hardware_domain": clean_text(result.get("hardware_domain", ""))[:cap],
+                "bottleneck_addressed": clean_text(result.get("bottleneck_addressed", ""))[:cap],
                 "specific_tech": clean_text(result.get("specific_tech", ""))[:cap],
                 "relevance_score": score,
                 "why_it_matters": clean_text(result.get("why_it_matters", ""))[:cap],
@@ -344,7 +337,6 @@ def fetch_and_enqueue():
         if not url:
             continue
         item["url"] = url
-        enrich_item_with_hardware_signals(item)
         fp = item_fingerprint(item)
         item["content_fingerprint"] = fp
 
