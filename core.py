@@ -8,7 +8,7 @@ import hashlib
 import re
 import logging
 import threading
-from collections import defaultdict, deque
+from collections import defaultdict, deque, namedtuple
 from threading import Lock
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl, urlencode as encode_query
@@ -20,6 +20,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlsplit
+
+from scrapers import split_pipe_specs
 
 load_dotenv()
 
@@ -79,7 +81,7 @@ def get_feed_specs(name, default_specs=None):
     if not raw.strip():
         return list(default_specs or [])
     specs = []
-    for part in raw.split("|"):
+    for part in split_pipe_specs(raw):
         part = part.strip()
         if not part:
             continue
@@ -186,10 +188,6 @@ DEFAULT_SPECIALIST_RSS_FEEDS = [
     ("SynBioBeta", "https://www.synbiobeta.com/feed;;https://news.google.com/rss/search?q=site:synbiobeta.com+when:7d&hl=en-US&gl=US&ceid=US:en"),
     ("Neuroscience News", "https://neurosciencenews.com/feed/"),
     ("SpaceNews", "https://spacenews.com/feed/"),
-    ("NASASpaceFlight", "https://www.nasaspaceflight.com/feed/"),
-    ("Payload Space", "https://payloadspace.com/feed/"),
-    ("The Robot Report", "https://www.therobotreport.com/feed/"),
-    ("IEEE Spectrum Robotics", "https://spectrum.ieee.org/feeds/topic/robotics.rss"),
     ("Carbon Herald", "https://carbonherald.com/feed/"),
     ("World Nuclear News", "https://www.world-nuclear-news.org/rss"),
     ("ThinkGeoEnergy", "https://www.thinkgeoenergy.com/feed/"),
@@ -215,6 +213,10 @@ DEFAULT_HTML_SCRAPER_TARGETS = [
     ("STAT News Biotech", "https://www.statnews.com/category/biotech/;;/20\\d{2}/\\d{2}/\\d{2}/[a-z0-9-]+"),
     ("SpaceNews Launch", "https://spacenews.com/segment/launch/;;/20\\d{2}/[a-z0-9-]+"),
     ("Carbon Herald Capture", "https://carbonherald.com/category/carbon-capture/;;/[a-z0-9-]+/"),
+    ("NASASpaceFlight", "https://www.nasaspaceflight.com/"),
+    ("Payload Space", "https://payloadspace.com/"),
+    ("The Robot Report", "https://www.therobotreport.com/category/news/"),
+    ("IEEE Spectrum Robotics", "https://spectrum.ieee.org/topic/robotics/"),
 ]
 
 # Step 3: SEC EDGAR polling — market-wide full-text search (EFTS)
@@ -373,6 +375,41 @@ def feed_record_result(feed_url, success):
             state["consecutive_failures"] += 1
             if state["consecutive_failures"] >= FEED_FAILURE_THRESHOLD:
                 state["cooldown_until"] = utc_now() + dt.timedelta(minutes=FEED_COOLDOWN_MINUTES)
+
+
+class RSSFetchStatus:
+    """Explicit outcome states for RSS/Atom fetches so callers can distinguish
+    HTTP 304 Not Modified and active cooldowns from genuine feed failures."""
+
+    OK = "ok"
+    NOT_MODIFIED = "not_modified"
+    COOLDOWN = "cooldown"
+    EMPTY = "empty"
+    ERROR = "error"
+
+
+RSSFetchResult = namedtuple("RSSFetchResult", ["items", "status"])
+
+
+def _get_feed_cache_headers(feed_url):
+    with _feed_state_lock:
+        return dict(FEED_CACHE_HEADERS.get(feed_url) or {})
+
+
+def _update_feed_cache_headers(feed_url, response_headers):
+    """Store ETag / Last-Modified validators thread-safely (supports both HTTP 200 and 304 per RFC 9110)."""
+    if not response_headers:
+        return
+    etag = response_headers.get("ETag")
+    last_modified = response_headers.get("Last-Modified")
+    if not etag and not last_modified:
+        return
+    with _feed_state_lock:
+        prev = FEED_CACHE_HEADERS.get(feed_url) or {}
+        FEED_CACHE_HEADERS[feed_url] = {
+            "etag": etag or prev.get("etag"),
+            "last_modified": last_modified or prev.get("last_modified"),
+        }
 
 
 def ensure_db_directory():
