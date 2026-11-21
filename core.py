@@ -185,14 +185,12 @@ SPECIALIST_RSS_MAX_ITEMS_PER_FEED = get_int("SPECIALIST_RSS_MAX_ITEMS_PER_FEED",
 DEFAULT_SPECIALIST_RSS_FEEDS = [
     ("GEN Biotechnology", "https://www.genengnews.com/feed/"),
     ("Labiotech.eu", "https://www.labiotech.eu/feed/"),
-    ("SynBioBeta", "https://www.synbiobeta.com/feed;;https://news.google.com/rss/search?q=site:synbiobeta.com+when:7d&hl=en-US&gl=US&ceid=US:en"),
     ("Neuroscience News", "https://neurosciencenews.com/feed/"),
     ("SpaceNews", "https://spacenews.com/feed/"),
     ("Carbon Herald", "https://carbonherald.com/feed/"),
     ("World Nuclear News", "https://www.world-nuclear-news.org/rss"),
     ("ThinkGeoEnergy", "https://www.thinkgeoenergy.com/feed/"),
     ("Energy Storage News", "https://www.energy-storage.news/feed/"),
-    ("Nanowerk", "https://www.nanowerk.com/rss/news.xml"),
     ("Phys.org Materials", "https://phys.org/rss-feed/chemistry-news/materials-science/"),
     ("IACR Cryptology ePrint", "https://eprint.iacr.org/rss/rss.xml"),
 ]
@@ -217,6 +215,8 @@ DEFAULT_HTML_SCRAPER_TARGETS = [
     ("Payload Space", "https://payloadspace.com/"),
     ("The Robot Report", "https://www.therobotreport.com/category/news/"),
     ("IEEE Spectrum Robotics", "https://spectrum.ieee.org/topic/robotics/"),
+    ("Nanowerk", "https://www.nanowerk.com/"),
+    ("SynBioBeta", "https://www.synbiobeta.com/read"),
 ]
 
 # Step 3: SEC EDGAR polling — market-wide full-text search (EFTS)

@@ -37,6 +37,8 @@ _TLS_IMPERSONATE_DOMAINS = {
     "payloadspace.com",
     "therobotreport.com",
     "spectrum.ieee.org",
+    "nanowerk.com",
+    "synbiobeta.com",
 }
 _TLS_IMPERSONATE_LOCK = Lock()
 
@@ -463,8 +465,8 @@ def _parse_markdown_links(md_text, base_url, label, url_pattern, ignore_patterns
     seen = set()
     base_netloc = urlsplit(base_url).netloc.lower().lstrip("www.")
 
-    # Match [Title](https://...) while ignoring markdown image syntax ![alt](img)
-    for match in re.finditer(r"(?<!!)\[([^\]]{15,240})\]\((https?://[^\s\)]+)\)", md_text):
+    # Match [Title](https://...) (including optional markdown link title) while ignoring ![alt](img)
+    for match in re.finditer(r'(?<!!)\[([^\]]{15,300})\]\((https?://[^\s\)]+)(?:\s+"[^"]*")?\)', md_text):
         raw_title, raw_url = match.group(1), match.group(2)
         cleaned_title = re.sub(r"!\[[^\]]*\]\([^\)]*\)", "", raw_title)
         cleaned_title = re.sub(r"[#*_`]+", "", cleaned_title)
@@ -511,8 +513,8 @@ def _parse_markdown_links(md_text, base_url, label, url_pattern, ignore_patterns
 
 
 def _scrape_via_jina_reader(base_url, label, url_pattern, ignore_patterns, max_items, normalize_url_fn=_normalize_url):
-    """Fetch a rendered page via Jina Reader (r.jina.ai) when direct datacenter IP
-    requests hit a Cloudflare JS/WAF challenge."""
+    """Fetch a rendered page via Jina Reader (r.jina.ai) without triggering
+    direct datacenter-IP Cloudflare 403 challenges."""
     reader_url = f"https://r.jina.ai/{base_url}"
     headers = {
         "Accept": "text/plain,text/markdown,*/*",
@@ -652,7 +654,7 @@ def _scrape_wayback_html_fallback(base_url, label, url_pattern, ignore_patterns,
 
 
 def scrape_nasaspaceflight(base_url, label, max_items, normalize_url_fn=_normalize_url):
-    """Dedicated scraper for NASASpaceFlight (WP REST API -> TLS-impersonated HTML -> Jina Reader -> XML sitemap -> Wayback)."""
+    """Dedicated scraper for NASASpaceFlight (direct Jina Reader -> XML sitemap -> Wayback)."""
     site_url = base_url or "https://www.nasaspaceflight.com/"
     nsf_pattern = r"/20\d{2}/\d{2}/[a-z0-9-]+"
     ignore_patterns = re.compile(
@@ -660,28 +662,9 @@ def scrape_nasaspaceflight(base_url, label, max_items, normalize_url_fn=_normali
         re.IGNORECASE,
     )
 
-    items = _scrape_wp_json_api(site_url, label, max_items, normalize_url_fn)
-    if items:
-        log.info(f"scraper[NASASpaceFlight]: extracted {len(items)} items via WP REST API")
-        return items
-
-    try:
-        resp = browser_get(site_url, timeout=20)
-        if resp.status_code == 200:
-            items = _parse_html_articles(
-                decode_response_text(resp), site_url, label, nsf_pattern, ignore_patterns, max_items, normalize_url_fn
-            )
-            if items:
-                log.info(f"scraper[NASASpaceFlight]: extracted {len(items)} items from HTML")
-                return items
-        else:
-            log.info(f"scraper[NASASpaceFlight]: HTML returned HTTP {resp.status_code}; trying Jina Reader & sitemap...")
-    except Exception as exc:
-        log.info(f"scraper[NASASpaceFlight]: HTML fetch issue: {repr(exc)}")
-
     items = _scrape_via_jina_reader(site_url, label, nsf_pattern, ignore_patterns, max_items, normalize_url_fn)
     if items:
-        log.info(f"scraper[NASASpaceFlight]: extracted {len(items)} items via Jina Reader")
+        log.debug(f"scraper[NASASpaceFlight]: extracted {len(items)} items via Jina Reader")
         return items
 
     items = _scrape_xml_sitemap(
@@ -695,17 +678,17 @@ def scrape_nasaspaceflight(base_url, label, max_items, normalize_url_fn=_normali
         normalize_url_fn,
     )
     if items:
-        log.info(f"scraper[NASASpaceFlight]: extracted {len(items)} items from XML sitemap")
+        log.debug(f"scraper[NASASpaceFlight]: extracted {len(items)} items from XML sitemap")
         return items
 
     items = _scrape_wayback_html_fallback(site_url, label, nsf_pattern, ignore_patterns, max_items, normalize_url_fn)
     if items:
-        log.info(f"scraper[NASASpaceFlight]: recovered {len(items)} items via Wayback snapshot")
+        log.debug(f"scraper[NASASpaceFlight]: recovered {len(items)} items via Wayback snapshot")
     return items
 
 
 def scrape_payload_space(base_url, label, max_items, normalize_url_fn=_normalize_url):
-    """Dedicated scraper for Payload Space (WP REST API -> TLS-impersonated HTML -> Jina Reader -> XML sitemap -> Wayback)."""
+    """Dedicated scraper for Payload Space (direct Jina Reader -> XML sitemap -> Wayback)."""
     site_url = base_url or "https://payloadspace.com/"
     payload_pattern = (
         r"^https?://(?:www\.)?payloadspace\.com/"
@@ -719,28 +702,9 @@ def scrape_payload_space(base_url, label, max_items, normalize_url_fn=_normalize
         re.IGNORECASE,
     )
 
-    items = _scrape_wp_json_api(site_url, label, max_items, normalize_url_fn)
-    if items:
-        log.info(f"scraper[Payload Space]: extracted {len(items)} items via WP REST API")
-        return items
-
-    try:
-        resp = browser_get(site_url, timeout=20)
-        if resp.status_code == 200:
-            items = _parse_html_articles(
-                decode_response_text(resp), site_url, label, payload_pattern, ignore_patterns, max_items, normalize_url_fn
-            )
-            if items:
-                log.info(f"scraper[Payload Space]: extracted {len(items)} items from HTML")
-                return items
-        else:
-            log.info(f"scraper[Payload Space]: HTML returned HTTP {resp.status_code}; trying Jina Reader & sitemap...")
-    except Exception as exc:
-        log.info(f"scraper[Payload Space]: HTML fetch issue: {repr(exc)}")
-
     items = _scrape_via_jina_reader(site_url, label, payload_pattern, ignore_patterns, max_items, normalize_url_fn)
     if items:
-        log.info(f"scraper[Payload Space]: extracted {len(items)} items via Jina Reader")
+        log.debug(f"scraper[Payload Space]: extracted {len(items)} items via Jina Reader")
         return items
 
     items = _scrape_xml_sitemap(
@@ -754,17 +718,17 @@ def scrape_payload_space(base_url, label, max_items, normalize_url_fn=_normalize
         normalize_url_fn,
     )
     if items:
-        log.info(f"scraper[Payload Space]: extracted {len(items)} items from XML sitemap")
+        log.debug(f"scraper[Payload Space]: extracted {len(items)} items from XML sitemap")
         return items
 
     items = _scrape_wayback_html_fallback(site_url, label, payload_pattern, ignore_patterns, max_items, normalize_url_fn)
     if items:
-        log.info(f"scraper[Payload Space]: recovered {len(items)} items via Wayback snapshot")
+        log.debug(f"scraper[Payload Space]: recovered {len(items)} items via Wayback snapshot")
     return items
 
 
 def scrape_the_robot_report(base_url, label, max_items, normalize_url_fn=_normalize_url):
-    """Dedicated scraper for The Robot Report (WP REST API -> TLS-impersonated HTML -> Jina Reader -> XML sitemap -> Wayback)."""
+    """Dedicated scraper for The Robot Report (direct Jina Reader -> XML sitemap -> Wayback)."""
     parsed_in = urlsplit(base_url or "")
     if parsed_in.path.rstrip("/") in ("", "/feed"):
         news_url = "https://www.therobotreport.com/category/news/"
@@ -783,28 +747,9 @@ def scrape_the_robot_report(base_url, label, max_items, normalize_url_fn=_normal
         re.IGNORECASE,
     )
 
-    items = _scrape_wp_json_api(news_url, label, max_items, normalize_url_fn)
-    if items:
-        log.info(f"scraper[The Robot Report]: extracted {len(items)} items via WP REST API")
-        return items
-
-    try:
-        resp = browser_get(news_url, timeout=20)
-        if resp.status_code == 200:
-            items = _parse_html_articles(
-                decode_response_text(resp), news_url, label, trr_pattern, ignore_patterns, max_items, normalize_url_fn
-            )
-            if items:
-                log.info(f"scraper[The Robot Report]: extracted {len(items)} items from HTML")
-                return items
-        else:
-            log.info(f"scraper[The Robot Report]: HTML returned HTTP {resp.status_code}; trying Jina Reader & sitemap...")
-    except Exception as exc:
-        log.info(f"scraper[The Robot Report]: HTML fetch issue: {repr(exc)}")
-
     items = _scrape_via_jina_reader(news_url, label, trr_pattern, ignore_patterns, max_items, normalize_url_fn)
     if items:
-        log.info(f"scraper[The Robot Report]: extracted {len(items)} items via Jina Reader")
+        log.debug(f"scraper[The Robot Report]: extracted {len(items)} items via Jina Reader")
         return items
 
     items = _scrape_xml_sitemap(
@@ -818,17 +763,17 @@ def scrape_the_robot_report(base_url, label, max_items, normalize_url_fn=_normal
         normalize_url_fn,
     )
     if items:
-        log.info(f"scraper[The Robot Report]: extracted {len(items)} items from XML sitemap")
+        log.debug(f"scraper[The Robot Report]: extracted {len(items)} items from XML sitemap")
         return items
 
     items = _scrape_wayback_html_fallback(news_url, label, trr_pattern, ignore_patterns, max_items, normalize_url_fn)
     if items:
-        log.info(f"scraper[The Robot Report]: recovered {len(items)} items via Wayback snapshot")
+        log.debug(f"scraper[The Robot Report]: recovered {len(items)} items via Wayback snapshot")
     return items
 
 
 def scrape_ieee_spectrum_robotics(base_url, label, max_items, normalize_url_fn=_normalize_url):
-    """Dedicated scraper for IEEE Spectrum Robotics (TLS-impersonated HTML -> Jina Reader -> XML sitemap -> Wayback)."""
+    """Dedicated scraper for IEEE Spectrum Robotics (direct Jina Reader -> XML sitemap -> Wayback)."""
     parsed_in = urlsplit(base_url or "")
     if parsed_in.path.rstrip("/") in ("", "/feeds/topic/robotics.rss", "/rss/robotics/fulltext"):
         topic_url = "https://spectrum.ieee.org/topic/robotics/"
@@ -846,23 +791,9 @@ def scrape_ieee_spectrum_robotics(base_url, label, max_items, normalize_url_fn=_
         re.IGNORECASE,
     )
 
-    try:
-        resp = browser_get(topic_url, timeout=20)
-        if resp.status_code == 200:
-            items = _parse_html_articles(
-                decode_response_text(resp), topic_url, label, ieee_pattern, ignore_patterns, max_items, normalize_url_fn
-            )
-            if items:
-                log.info(f"scraper[IEEE Spectrum Robotics]: extracted {len(items)} items from HTML")
-                return items
-        else:
-            log.info(f"scraper[IEEE Spectrum Robotics]: HTML returned HTTP {resp.status_code}; trying Jina Reader & sitemap...")
-    except Exception as exc:
-        log.info(f"scraper[IEEE Spectrum Robotics]: HTML fetch issue: {repr(exc)}")
-
     items = _scrape_via_jina_reader(topic_url, label, ieee_pattern, ignore_patterns, max_items, normalize_url_fn)
     if items:
-        log.info(f"scraper[IEEE Spectrum Robotics]: extracted {len(items)} items via Jina Reader")
+        log.debug(f"scraper[IEEE Spectrum Robotics]: extracted {len(items)} items via Jina Reader")
         return items
 
     items = _scrape_xml_sitemap(
@@ -875,12 +806,87 @@ def scrape_ieee_spectrum_robotics(base_url, label, max_items, normalize_url_fn=_
         normalize_url_fn,
     )
     if items:
-        log.info(f"scraper[IEEE Spectrum Robotics]: extracted {len(items)} items from XML sitemap")
+        log.debug(f"scraper[IEEE Spectrum Robotics]: extracted {len(items)} items from XML sitemap")
         return items
 
     items = _scrape_wayback_html_fallback(topic_url, label, ieee_pattern, ignore_patterns, max_items, normalize_url_fn)
     if items:
-        log.info(f"scraper[IEEE Spectrum Robotics]: recovered {len(items)} items via Wayback snapshot")
+        log.debug(f"scraper[IEEE Spectrum Robotics]: recovered {len(items)} items via Wayback snapshot")
+    return items
+
+
+def scrape_nanowerk(base_url, label, max_items, normalize_url_fn=_normalize_url):
+    """Dedicated scraper for Nanowerk (direct Jina Reader -> Wayback)."""
+    parsed_in = urlsplit(base_url or "")
+    if parsed_in.path.rstrip("/") in ("", "/rss/news.xml"):
+        site_url = "https://www.nanowerk.com/"
+    else:
+        site_url = base_url or "https://www.nanowerk.com/"
+
+    nanowerk_pattern = r"/(?:newsid|spotid)=\d+\.php"
+    ignore_patterns = re.compile(
+        r"/(about|contact|privacy|terms|login|register|search|advertise|directory|books|jobs|rss)/?",
+        re.IGNORECASE,
+    )
+
+    items = _scrape_via_jina_reader(site_url, label, nanowerk_pattern, ignore_patterns, max_items, normalize_url_fn)
+    if items:
+        log.debug(f"scraper[Nanowerk]: extracted {len(items)} items via Jina Reader")
+        return items
+
+    items = _scrape_wayback_html_fallback(site_url, label, nanowerk_pattern, ignore_patterns, max_items, normalize_url_fn)
+    if items:
+        log.debug(f"scraper[Nanowerk]: recovered {len(items)} items via Wayback snapshot")
+    return items
+
+
+def scrape_synbiobeta(base_url, label, max_items, normalize_url_fn=_normalize_url):
+    """Dedicated scraper for SynBioBeta (direct Jina Reader -> HTML -> XML sitemap -> Wayback)."""
+    parsed_in = urlsplit(base_url or "")
+    if parsed_in.path.rstrip("/") in ("", "/feed"):
+        read_url = "https://www.synbiobeta.com/read"
+    else:
+        read_url = base_url or "https://www.synbiobeta.com/read"
+
+    synbio_pattern = r"^https?://(?:www\.)?synbiobeta\.com/read/[a-z0-9][a-z0-9-]{4,}/?$"
+    ignore_patterns = re.compile(
+        r"/(about|contact|privacy|terms|login|signup|register|subscribe|categories|events|sponsors|careers|feed)/?",
+        re.IGNORECASE,
+    )
+
+    items = _scrape_via_jina_reader(read_url, label, synbio_pattern, ignore_patterns, max_items, normalize_url_fn)
+    if items:
+        log.debug(f"scraper[SynBioBeta]: extracted {len(items)} items via Jina Reader")
+        return items
+
+    try:
+        resp = browser_get(read_url, timeout=20)
+        if resp.status_code == 200:
+            items = _parse_html_articles(
+                decode_response_text(resp), read_url, label, synbio_pattern, ignore_patterns, max_items, normalize_url_fn
+            )
+            if items:
+                log.debug(f"scraper[SynBioBeta]: extracted {len(items)} items from HTML")
+                return items
+    except Exception:
+        pass
+
+    items = _scrape_xml_sitemap(
+        [
+            "https://www.synbiobeta.com/sitemap.xml",
+        ],
+        label,
+        synbio_pattern,
+        max_items,
+        normalize_url_fn,
+    )
+    if items:
+        log.debug(f"scraper[SynBioBeta]: extracted {len(items)} items from XML sitemap")
+        return items
+
+    items = _scrape_wayback_html_fallback(read_url, label, synbio_pattern, ignore_patterns, max_items, normalize_url_fn)
+    if items:
+        log.debug(f"scraper[SynBioBeta]: recovered {len(items)} items via Wayback snapshot")
     return items
 
 
@@ -889,6 +895,8 @@ DEDICATED_SCRAPERS = {
     "payloadspace.com": scrape_payload_space,
     "therobotreport.com": scrape_the_robot_report,
     "spectrum.ieee.org": scrape_ieee_spectrum_robotics,
+    "nanowerk.com": scrape_nanowerk,
+    "synbiobeta.com": scrape_synbiobeta,
 }
 
 
