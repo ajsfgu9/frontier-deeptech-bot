@@ -459,7 +459,7 @@ def _fetch_feed_specs_common(specs, source_type, max_items_per_feed, rss_fetcher
 
     if total_for_label == 0 and not unchanged and not skipped_cooldown and candidate_urls:
       parsed_root = urlsplit(candidate_urls[0])
-      if parsed_root.scheme and parsed_root.netloc and "news.google.com" not in parsed_root.netloc:
+      if parsed_root.scheme and parsed_root.netloc:
         root_url = f"{parsed_root.scheme}://{parsed_root.netloc}/"
         log.info(
             f"{source_type}: RSS yielded 0 items for {label};"
